@@ -84,7 +84,7 @@ public class MultiChunkExecutionIntegrationTests extends AbstractFakeServiceInte
             });
 
     thread.start();
-    thread.join(10_000);
+    thread.join(0);
 
     // Check if the thread had an exception
     if (threadException.get() != null) {

@@ -83,4 +83,15 @@ public class DriverUtil {
   public static boolean isRunningAgainstFake() {
     return Boolean.parseBoolean(System.getProperty(IS_FAKE_SERVICE_TEST_PROP));
   }
+
+  /**
+   * Checks if proxy usage is disabled.
+   *
+   * @param connectionContext The Databricks connection context containing proxy configuration
+   * @return true if both cloud fetch proxy and system proxy are disabled; false otherwise
+   * @throws NullPointerException if connectionContext is null
+   */
+  public static boolean hasProxyDisabled(IDatabricksConnectionContext connectionContext) {
+    return !connectionContext.getUseCloudFetchProxy() && !connectionContext.getUseSystemProxy();
+  }
 }

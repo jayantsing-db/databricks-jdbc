@@ -231,7 +231,7 @@ public class IntegrationTestUtil {
   public static Connection getValidJDBCConnection(Properties connectionProperties)
       throws SQLException {
     connectionProperties.put(DatabricksJdbcUrlParams.USER.getParamName(), getDatabricksUser());
-    connectionProperties.put(DatabricksJdbcUrlParams.PASSWORD.getParamName(), getDatabricksToken());
+    connectionProperties.put(DatabricksJdbcUrlParams.PASSWORD.getParamName(), "token");
     connectionProperties.put(
         DatabricksJdbcUrlParams.ENABLE_SQL_EXEC_HYBRID_RESULTS.getParamName(), '0');
 

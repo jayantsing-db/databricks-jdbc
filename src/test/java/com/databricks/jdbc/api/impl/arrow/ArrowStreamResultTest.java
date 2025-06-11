@@ -32,6 +32,7 @@ import com.google.common.collect.ImmutableList;
 import java.io.*;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.Float8Vector;
@@ -66,7 +67,7 @@ public class ArrowStreamResultTest {
   private final Random random = new Random();
   private final long rowsInChunk = 110L;
   private static final String JDBC_URL =
-      "jdbc:databricks://sample-host.18.azuredatabricks.net:4423/default;transportMode=http;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/99999999;";
+      "jdbc:databricks://sample-host.18.azuredatabricks.net:4423/default;transportMode=http;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/99999999;usecfproxy=1";
   private static final String CHUNK_URL_PREFIX = "chunk.databricks.com/";
   private static final StatementId STATEMENT_ID = new StatementId("statement_id");
   @Mock DatabricksSdkClient mockedSdkClient;
@@ -92,7 +93,7 @@ public class ArrowStreamResultTest {
             .setSchema(new ResultSchema().setColumns(new ArrayList<>()).setColumnCount(0L));
     ResultData resultData = new ResultData().setExternalLinks(new ArrayList<>());
     ArrowStreamResult result =
-        new ArrowStreamResult(resultManifest, resultData, STATEMENT_ID, session);
+        new ArrowStreamResult(resultManifest, resultData, STATEMENT_ID, session, mockHttpClient);
     assertDoesNotThrow(result::close);
     assertFalse(result.hasNext());
   }
@@ -135,14 +136,11 @@ public class ArrowStreamResultTest {
 
   @Test
   public void testInlineArrow() throws DatabricksSQLException {
-    IDatabricksConnectionContext connectionContext =
-        DatabricksConnectionContextFactory.create(JDBC_URL, new Properties());
-    when(session.getConnectionContext()).thenReturn(connectionContext);
     when(metadataResp.getSchema()).thenReturn(TEST_TABLE_SCHEMA);
     when(fetchResultsResp.getResults()).thenReturn(resultData);
     when(fetchResultsResp.getResultSetMetadata()).thenReturn(metadataResp);
     ArrowStreamResult result =
-        new ArrowStreamResult(fetchResultsResp, true, parentStatement, session);
+        new ArrowStreamResult(fetchResultsResp, true, parentStatement, session, mockHttpClient);
     assertEquals(-1, result.getCurrentRow());
     assertTrue(result.hasNext());
     assertFalse(result.next());
@@ -165,6 +163,10 @@ public class ArrowStreamResultTest {
     when(parentStatement.getStatementId()).thenReturn(STATEMENT_ID);
     ArrowStreamResult result =
         new ArrowStreamResult(fetchResultsResp, false, parentStatement, session, mockHttpClient);
+
+    // Add some delay for download threads to exit
+    TimeUnit.SECONDS.sleep(2);
+
     assertEquals(-1, result.getCurrentRow());
     assertTrue(result.hasNext());
     assertDoesNotThrow(result::close);
@@ -196,10 +198,14 @@ public class ArrowStreamResultTest {
     DatabricksSession session = new DatabricksSession(connectionContext, mockedSdkClient);
 
     setupMockResponse();
+    setupResultChunkMocks();
     when(mockHttpClient.execute(isA(HttpUriRequest.class), eq(true))).thenReturn(httpResponse);
 
     ArrowStreamResult result =
         new ArrowStreamResult(resultManifest, resultData, STATEMENT_ID, session, mockHttpClient);
+
+    // Add some delay for download threads to exit
+    TimeUnit.SECONDS.sleep(2);
 
     result.next();
     Object objectInFirstColumn = result.getObject(0);

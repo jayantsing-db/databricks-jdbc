@@ -4,9 +4,11 @@ import static com.databricks.jdbc.common.util.DatabricksThriftUtil.getTypeFromTy
 
 import com.databricks.jdbc.api.impl.ComplexDataTypeParser;
 import com.databricks.jdbc.api.impl.IExecutionResult;
+import com.databricks.jdbc.api.impl.arrow.incubator.RemoteChunkProviderV2;
 import com.databricks.jdbc.api.internal.IDatabricksSession;
 import com.databricks.jdbc.api.internal.IDatabricksStatementInternal;
 import com.databricks.jdbc.common.CompressionCodec;
+import com.databricks.jdbc.common.util.DriverUtil;
 import com.databricks.jdbc.dbclient.IDatabricksHttpClient;
 import com.databricks.jdbc.dbclient.impl.common.StatementId;
 import com.databricks.jdbc.dbclient.impl.http.DatabricksHttpClientFactory;
@@ -64,13 +66,7 @@ public class ArrowStreamResult implements IExecutionResult {
       this.chunkProvider = new InlineChunkProvider(resultData, resultManifest);
     } else {
       this.chunkProvider =
-          new RemoteChunkProvider(
-              statementId,
-              resultManifest,
-              resultData,
-              session,
-              httpClient,
-              session.getConnectionContext().getCloudFetchThreadPoolSize());
+          createRemoteChunkProvider(resultManifest, resultData, statementId, session, httpClient);
     }
     this.columnInfos =
         resultManifest.getSchema().getColumnCount() == 0
@@ -105,16 +101,8 @@ public class ArrowStreamResult implements IExecutionResult {
     if (isInlineArrow) {
       this.chunkProvider = new InlineChunkProvider(resultsResp, parentStatement, session);
     } else {
-      CompressionCodec compressionCodec =
-          CompressionCodec.getCompressionMapping(resultsResp.getResultSetMetadata());
       this.chunkProvider =
-          new RemoteChunkProvider(
-              parentStatement,
-              resultsResp,
-              session,
-              httpClient,
-              session.getConnectionContext().getCloudFetchThreadPoolSize(),
-              compressionCodec);
+          createRemoteChunkProvider(resultsResp, parentStatement, session, httpClient);
     }
   }
 
@@ -227,5 +215,56 @@ public class ArrowStreamResult implements IExecutionResult {
     for (TColumnDesc columnInfo : resultManifest.getSchema().getColumns()) {
       columnInfos.add(new ColumnInfo().setTypeName(getTypeFromTypeDesc(columnInfo.getTypeDesc())));
     }
+  }
+
+  /** Creates a remote chunk provider based on the {@link ResultManifest} and {@link ResultData}. */
+  private ChunkProvider createRemoteChunkProvider(
+      ResultManifest resultManifest,
+      ResultData resultData,
+      StatementId statementId,
+      IDatabricksSession session,
+      IDatabricksHttpClient httpClient)
+      throws DatabricksSQLException {
+    return DriverUtil.hasProxyDisabled(session.getConnectionContext())
+        ? new RemoteChunkProviderV2(
+            statementId,
+            resultManifest,
+            resultData,
+            session,
+            httpClient,
+            session.getConnectionContext().getCloudFetchThreadPoolSize())
+        : new RemoteChunkProvider(
+            statementId,
+            resultManifest,
+            resultData,
+            session,
+            httpClient,
+            session.getConnectionContext().getCloudFetchThreadPoolSize());
+  }
+
+  /** Creates a remote chunk provider based on the {@link TFetchResultsResp}. */
+  private ChunkProvider createRemoteChunkProvider(
+      TFetchResultsResp resultsResp,
+      IDatabricksStatementInternal parentStatement,
+      IDatabricksSession session,
+      IDatabricksHttpClient httpClient)
+      throws DatabricksSQLException {
+    CompressionCodec compressionCodec =
+        CompressionCodec.getCompressionMapping(resultsResp.getResultSetMetadata());
+    return DriverUtil.hasProxyDisabled(session.getConnectionContext())
+        ? new RemoteChunkProviderV2(
+            parentStatement,
+            resultsResp,
+            session,
+            httpClient,
+            session.getConnectionContext().getCloudFetchThreadPoolSize(),
+            compressionCodec)
+        : new RemoteChunkProvider(
+            parentStatement,
+            resultsResp,
+            session,
+            httpClient,
+            session.getConnectionContext().getCloudFetchThreadPoolSize(),
+            compressionCodec);
   }
 }

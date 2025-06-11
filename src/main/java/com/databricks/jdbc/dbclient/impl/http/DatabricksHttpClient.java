@@ -58,7 +58,11 @@ public class DatabricksHttpClient implements IDatabricksHttpClient, Closeable {
         new IdleConnectionEvictor(
             connectionManager, connectionContext.getIdleHttpConnectionExpiry(), TimeUnit.SECONDS);
     idleConnectionEvictor.start();
-    asyncClient = GlobalAsyncHttpClient.getClient();
+    if (DriverUtil.hasProxyDisabled(connectionContext)) {
+      // The async client's proxy support is currently under development. This will need to be
+      // updated once proxy support is implemented.
+      asyncClient = GlobalAsyncHttpClient.getClient();
+    }
   }
 
   @VisibleForTesting

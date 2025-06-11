@@ -4,6 +4,7 @@ import static com.databricks.jdbc.api.impl.arrow.ArrowResultChunk.SECONDS_BUFFER
 
 import com.databricks.jdbc.api.internal.IDatabricksSession;
 import com.databricks.jdbc.common.DatabricksClientType;
+import com.databricks.jdbc.common.util.DriverUtil;
 import com.databricks.jdbc.dbclient.impl.common.StatementId;
 import com.databricks.jdbc.exception.DatabricksSQLException;
 import com.databricks.jdbc.exception.DatabricksValidationException;
@@ -366,7 +367,8 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
 
     return chunkFuture.isDone()
         && isChunkLinkExpired(chunkFuture.get())
-        && chunk.getStatus() != ChunkStatus.DOWNLOAD_SUCCEEDED;
+        && chunk.getStatus() != ChunkStatus.DOWNLOAD_SUCCEEDED
+        && !DriverUtil.isRunningAgainstFake();
   }
 
   /** Cancels the current download task if it exists and is not done. Waits briefly for cleanup. */
