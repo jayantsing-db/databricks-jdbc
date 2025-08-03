@@ -1,0 +1,46 @@
+name: Release Freeze Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check-release-freeze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for release freeze
+        run: |
+          # Check if freeze marker exists
+          if [ -f ".release-freeze" ]; then
+            echo "Repository is in release freeze mode"
+            echo "Release freeze reason: $(cat .release-freeze)"
+            echo "Only release-related commits are allowed"
+          
+            # Check if this is a release-related commit
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              PR_TITLE="${{ github.event.pull_request.title }}"
+              PR_BODY="${{ github.event.pull_request.body }}"
+            else
+              COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+              PR_TITLE="$COMMIT_MESSAGE"
+              PR_BODY=""
+            fi
+          
+            # Allow release-related PRs/commits
+            if [[ "$PR_TITLE" =~ ^(Release|Hotfix|version).* ]] || \
+               [[ "$PR_BODY" =~ RELEASE_OVERRIDE=true ]]; then
+              echo "Release-related change detected, allowing merge"
+              exit 0
+            else
+              echo "Non-release changes are blocked during freeze"
+              echo "To override, include 'RELEASE_OVERRIDE=true' in PR description"
+              exit 1
+            fi
+          else
+            echo "No release freeze active"
+          fi
