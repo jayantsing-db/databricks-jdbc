@@ -119,6 +119,12 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
       // SEA doesn't give all chunk links, so better to trigger download chain as soon as possible
       LOGGER.info("Auto-triggering download chain for SEA client type");
       triggerNextBatchDownload();
+    } else if (session.getConnectionContext().getClientType() == DatabricksClientType.THRIFT) {
+      // For Thrift client, futures should be completed immediately as links are fetched eagerly
+      // TODO (jayantsing-db): Add test coverage
+      for (long i = 0; i < totalChunks; i++) {
+        chunkIndexToLinkFuture.get(i).complete(chunkIndexToChunksMap.get(i).chunkLink);
+      }
     }
   }
 
