@@ -49,8 +49,8 @@ import org.junit.jupiter.api.Test;
 public class DatabricksDriverExamples {
 
   private static final String JDBC_URL_WAREHOUSE =
-      "jdbc:databricks://sample-host.cloud.databricks.com:9999/default;"
-          + "transportMode=https;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/999999999999;";
+      "jdbc:databricks://benchmarking-staging-aws-us-west-2.staging.cloud.databricks.com:443/default;"
+          + "transportMode=http;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/0112a04cba39da27;";
   private static final String JDBC_URL_CLUSTER =
       "jdbc:databricks://sample-host.cloud.databricks.com:9999/default;"
           + "transportMode=http;ssl=1;httpPath=sql/protocolv1/o/9999999999999999/9999999999999999;AuthMech=3;";
@@ -107,16 +107,16 @@ public class DatabricksDriverExamples {
     // Print row data
     while (resultSet.next()) {
       rows++;
-      for (int i = 1; i <= columnsNumber; i++) {
-        try {
-          Object columnValue = resultSet.getObject(i);
-          System.out.print(columnValue + "\t\t");
-        } catch (Exception e) {
-          // Certain columns might be absent or throw exceptions in edge cases
-          System.out.print("NULL\t\t");
-        }
-      }
-      System.out.println();
+      //      for (int i = 1; i <= columnsNumber; i++) {
+      //        try {
+      //          Object columnValue = resultSet.getObject(i);
+      //          System.out.print(columnValue + "\t\t");
+      //        } catch (Exception e) {
+      //          // Certain columns might be absent or throw exceptions in edge cases
+      //          System.out.print("NULL\t\t");
+      //        }
+      //      }
+      //      System.out.println();
     }
     System.out.println("Total rows: " + rows);
   }
@@ -143,11 +143,14 @@ public class DatabricksDriverExamples {
   void exampleRowsFetchedPerBlock() throws Exception {
     // Register the Databricks JDBC driver
     DriverManager.registerDriver(new Driver());
-    String jdbcUrl =
-        JDBC_URL_WAREHOUSE + "EnableTelemetry=1" + ";enableArrow=0" + ";RowsFetchedPerBlock=3";
-    Connection con = DriverManager.getConnection(jdbcUrl, "token", DATABRICKS_TOKEN);
+    String jdbcUrl = JDBC_URL_WAREHOUSE + "EnableTelemetry=1" + ";enableArrow=0;RowsFetchedPerBlock=5000";
+    Connection con =
+        DriverManager.getConnection(jdbcUrl, "token", "token");
     Statement stmt = con.createStatement();
-    ResultSet rs = stmt.executeQuery("SELECT * FROM RANGE(12)"); // 4 FetchResults calls made
+    ResultSet rs =
+        stmt.executeQuery(
+            "SELECT * FROM main.tpch_sf10000_delta.customer LIMIT 1000000"); // 4 FetchResults calls
+    // made
     printResultSet(rs);
     stmt.close();
     rs.close();
