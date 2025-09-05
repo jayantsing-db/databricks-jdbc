@@ -218,6 +218,11 @@ public class LazyThriftResult implements IExecutionResult {
         totalRowsFetched);
   }
 
+  /**
+   * Fetches the next batch of data from the server and creates columnar views.
+   *
+   * @throws DatabricksSQLException if the fetch operation fails
+   */
   private void fetchNextBatch() throws DatabricksSQLException {
     try {
       LOGGER.debug("Fetching next batch, current total rows fetched: {}", totalRowsFetched);
