@@ -645,7 +645,7 @@
                 <configuration>
                   <artifacts>
                     <artifact>
-                      <file>uber-minimal-pom.xml</file>
+                      <file>${project.basedir}/uber-minimal-pom.xml</file>
                       <type>pom</type>
                     </artifact>
                   </artifacts>
