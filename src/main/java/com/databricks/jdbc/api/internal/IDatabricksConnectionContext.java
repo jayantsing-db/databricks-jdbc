@@ -268,6 +268,9 @@ public interface IDatabricksConnectionContext {
   /** Returns the batch size for Telemetry logs processing */
   int getTelemetryBatchSize();
 
+  /** Returns the maximum number of rows per batch insert execution */
+  int getBatchInsertSize();
+
   /**
    * Returns a unique identifier for this connection context.
    *
@@ -401,4 +404,7 @@ public interface IDatabricksConnectionContext {
    * synchronous metadata requests in SEA mode
    */
   boolean isSeaSyncMetadataEnabled();
+
+  /** Returns whether OAuth refresh tokens should be disabled (omit offline_access by default). */
+  boolean getDisableOauthRefreshToken();
 }
