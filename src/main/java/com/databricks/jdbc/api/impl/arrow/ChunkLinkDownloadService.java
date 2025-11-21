@@ -114,6 +114,24 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
 
     this.chunkIndexToChunksMap = chunkIndexToChunksMap;
 
+    // Complete futures for chunks that already have their links (upfront-fetched)
+    if (nextBatchStartIndex > 0) {
+      LOGGER.info("Completing futures for {} upfront-fetched links", nextBatchStartIndex);
+      int completedCount = 0;
+      for (long i = 0; i < Math.min(nextBatchStartIndex, totalChunks); i++) {
+        T chunk = chunkIndexToChunksMap.get(i);
+        if (chunk != null) {
+          ExternalLink link = chunk.getChunkLink();
+          if (link != null) {
+            LOGGER.debug("Completing link future for chunk {} in constructor", i);
+            chunkIndexToLinkFuture.get(i).complete(link);
+            completedCount++;
+          }
+        }
+      }
+      LOGGER.info("Completed {} futures for upfront-fetched links", completedCount);
+    }
+
     if (session.getConnectionContext().getClientType() == DatabricksClientType.SEA
         && isDownloadChainStarted.compareAndSet(false, true)) {
       // SEA doesn't give all chunk links, so better to trigger download chain as soon as possible

@@ -47,6 +47,7 @@ class ChunkLinkDownloadServiceTest {
   @BeforeEach
   void setUp() {
     when(mockSession.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
+    lenient().when(mockChunkMap.get(anyLong())).thenReturn(null);
   }
 
   @Test
