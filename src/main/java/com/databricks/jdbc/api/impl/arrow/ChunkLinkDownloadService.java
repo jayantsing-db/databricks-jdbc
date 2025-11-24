@@ -10,6 +10,7 @@ import com.databricks.jdbc.exception.DatabricksValidationException;
 import com.databricks.jdbc.log.JdbcLogger;
 import com.databricks.jdbc.log.JdbcLoggerFactory;
 import com.databricks.jdbc.model.core.ExternalLink;
+import com.google.common.annotations.VisibleForTesting;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.Map;
@@ -440,5 +441,16 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
         Instant.parse(link.getExpiration()).minusSeconds(SECONDS_BUFFER_FOR_EXPIRY);
 
     return expirationWithBuffer.isBefore(Instant.now());
+  }
+
+  /**
+   * Returns the CompletableFuture for a specific chunk index for testing purposes.
+   *
+   * @param chunkIndex The index of the chunk
+   * @return The CompletableFuture associated with the chunk index, or null if not found
+   */
+  @VisibleForTesting
+  CompletableFuture<ExternalLink> getLinkFutureForTest(long chunkIndex) {
+    return chunkIndexToLinkFuture.get(chunkIndex);
   }
 }
