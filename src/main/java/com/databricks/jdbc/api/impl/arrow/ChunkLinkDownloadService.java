@@ -349,7 +349,7 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
         LOGGER.info(
             "Detected expired link for chunk {}, re-triggering batch download from the smallest index with the expired link",
             chunkIndex);
-        for (long i = 1; i < totalChunks; i++) {
+        for (long i = 0; i < totalChunks; i++) {
           if (isChunkLinkExpiredForPendingDownload(i)) {
             LOGGER.info("Found the smallest index {} with the expired link, initiating reset", i);
             cancelCurrentDownloadTask();
