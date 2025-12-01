@@ -12,6 +12,7 @@
 ### Fixed
 
 - Fix driver crash when using `INTERVAL` types.
+- Fix U2M by including SDK OAuth HTML callback resources.
 
 ---
 *Note: When making changes, please add your change under the appropriate section with a brief description.*
