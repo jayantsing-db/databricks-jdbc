@@ -280,6 +280,8 @@ class ChunkLinkDownloadServiceTest {
     link.setChunkIndex(chunkIndex);
     link.setHttpHeaders(headers);
     link.setExpiration(expiration);
+    link.setRowOffset(chunkIndex * 100L);
+    link.setRowCount(100L);
 
     return link;
   }
@@ -293,24 +295,11 @@ class ChunkLinkDownloadServiceTest {
       return ChunkLinkFetchResult.endOfStream();
     }
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = new ArrayList<>();
-    for (ExternalLink link : links) {
-      chunkLinks.add(
-          new ChunkLinkFetchResult.ChunkLinkInfo(
-              link.getChunkIndex(),
-              link,
-              link.getRowCount() != null ? link.getRowCount() : 0,
-              link.getRowOffset() != null ? link.getRowOffset() : 0));
-    }
-
     ExternalLink lastLink = links.get(links.size() - 1);
     boolean hasMore = lastLink.getNextChunkIndex() != null;
     long nextFetchIndex = hasMore ? lastLink.getNextChunkIndex() : -1;
-    long nextRowOffset = 0;
-    if (lastLink.getRowOffset() != null && lastLink.getRowCount() != null) {
-      nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
-    }
+    long nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
 
-    return ChunkLinkFetchResult.of(chunkLinks, hasMore, nextFetchIndex, nextRowOffset);
+    return ChunkLinkFetchResult.of(links, hasMore, nextFetchIndex, nextRowOffset);
   }
 }

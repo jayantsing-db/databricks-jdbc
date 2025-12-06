@@ -230,15 +230,15 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
                     statementId);
 
                 // Complete futures for all chunks in this batch
-                for (ChunkLinkFetchResult.ChunkLinkInfo linkInfo : result.getChunkLinks()) {
+                for (ExternalLink link : result.getChunkLinks()) {
                   CompletableFuture<ExternalLink> future =
-                      chunkIndexToLinkFuture.get(linkInfo.getChunkIndex());
+                      chunkIndexToLinkFuture.get(link.getChunkIndex());
                   if (future != null) {
                     LOGGER.debug(
                         "Completing future for chunk {} for statement id {}",
-                        linkInfo.getChunkIndex(),
+                        link.getChunkIndex(),
                         statementId);
-                    future.complete(linkInfo.getLink());
+                    future.complete(link);
                   }
                 }
 
@@ -246,7 +246,7 @@ public class ChunkLinkDownloadService<T extends AbstractArrowResultChunk> {
                 if (!result.getChunkLinks().isEmpty()) {
                   long maxChunkIndex =
                       result.getChunkLinks().stream()
-                          .mapToLong(ChunkLinkFetchResult.ChunkLinkInfo::getChunkIndex)
+                          .mapToLong(ExternalLink::getChunkIndex)
                           .max()
                           .getAsLong();
                   nextBatchStartIndex.set(maxChunkIndex + 1);

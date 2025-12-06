@@ -13,16 +13,18 @@ import java.util.List;
  *   <li>SEA: Uses chunkIndex for continuation, hasMore derived from nextChunkIndex on last link
  *   <li>Thrift: Uses rowOffset for continuation, hasMore from server's hasMoreRows flag
  * </ul>
+ *
+ * <p>Each {@link ExternalLink} contains chunkIndex, rowCount, rowOffset, and the download URL.
  */
 public class ChunkLinkFetchResult {
 
-  private final List<ChunkLinkInfo> chunkLinks;
+  private final List<ExternalLink> chunkLinks;
   private final boolean hasMore;
   private final long nextFetchIndex;
   private final long nextRowOffset;
 
   private ChunkLinkFetchResult(
-      List<ChunkLinkInfo> chunkLinks, boolean hasMore, long nextFetchIndex, long nextRowOffset) {
+      List<ExternalLink> chunkLinks, boolean hasMore, long nextFetchIndex, long nextRowOffset) {
     this.chunkLinks = chunkLinks;
     this.hasMore = hasMore;
     this.nextFetchIndex = nextFetchIndex;
@@ -32,14 +34,14 @@ public class ChunkLinkFetchResult {
   /**
    * Creates a result with the given links and continuation info.
    *
-   * @param links The fetched chunk links
+   * @param links The fetched external links (each contains chunkIndex, rowCount, rowOffset, URL)
    * @param hasMore Whether more chunks are available
    * @param nextFetchIndex The next chunk index to fetch from, or -1 if no more
    * @param nextRowOffset The next row offset for Thrift FETCH_ABSOLUTE
    * @return A new ChunkLinkFetchResult
    */
   public static ChunkLinkFetchResult of(
-      List<ChunkLinkInfo> links, boolean hasMore, long nextFetchIndex, long nextRowOffset) {
+      List<ExternalLink> links, boolean hasMore, long nextFetchIndex, long nextRowOffset) {
     return new ChunkLinkFetchResult(links, hasMore, nextFetchIndex, nextRowOffset);
   }
 
@@ -53,11 +55,11 @@ public class ChunkLinkFetchResult {
   }
 
   /**
-   * Returns the list of chunk links fetched in this batch.
+   * Returns the list of external links fetched in this batch.
    *
-   * @return List of ChunkLinkInfo, may be empty
+   * @return List of ExternalLink, may be empty
    */
-  public List<ChunkLinkInfo> getChunkLinks() {
+  public List<ExternalLink> getChunkLinks() {
     return chunkLinks;
   }
 
@@ -95,36 +97,5 @@ public class ChunkLinkFetchResult {
    */
   public boolean isEndOfStream() {
     return !hasMore && chunkLinks.isEmpty();
-  }
-
-  /** Information about a single chunk link. */
-  public static class ChunkLinkInfo {
-    private final long chunkIndex;
-    private final ExternalLink link;
-    private final long rowCount;
-    private final long rowOffset;
-
-    public ChunkLinkInfo(long chunkIndex, ExternalLink link, long rowCount, long rowOffset) {
-      this.chunkIndex = chunkIndex;
-      this.link = link;
-      this.rowCount = rowCount;
-      this.rowOffset = rowOffset;
-    }
-
-    public long getChunkIndex() {
-      return chunkIndex;
-    }
-
-    public ExternalLink getLink() {
-      return link;
-    }
-
-    public long getRowCount() {
-      return rowCount;
-    }
-
-    public long getRowOffset() {
-      return rowOffset;
-    }
   }
 }

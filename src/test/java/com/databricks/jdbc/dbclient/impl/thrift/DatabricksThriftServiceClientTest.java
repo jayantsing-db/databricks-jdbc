@@ -25,6 +25,7 @@ import com.databricks.jdbc.exception.DatabricksParsingException;
 import com.databricks.jdbc.exception.DatabricksSQLException;
 import com.databricks.jdbc.model.client.thrift.generated.*;
 import com.databricks.jdbc.model.core.ChunkLinkFetchResult;
+import com.databricks.jdbc.model.core.ExternalLink;
 import com.databricks.jdbc.model.core.ResultColumn;
 import com.databricks.sdk.core.DatabricksConfig;
 import com.databricks.sdk.service.sql.StatementState;
@@ -377,9 +378,9 @@ public class DatabricksThriftServiceClientTest {
             Collections.singletonList(new TSparkArrowResultLink().setFileLink(TEST_STRING)));
     // Pass chunkIndex=0 and rowOffset=0 for the first chunk
     ChunkLinkFetchResult result = client.getResultChunks(TEST_STMT_ID, 0, 0);
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = result.getChunkLinks();
+    List<ExternalLink> chunkLinks = result.getChunkLinks();
     assertEquals(1, chunkLinks.size());
-    assertEquals(TEST_STRING, chunkLinks.get(0).getLink().getExternalLink());
+    assertEquals(TEST_STRING, chunkLinks.get(0).getExternalLink());
   }
 
   @Test

@@ -248,7 +248,9 @@ public class ArrowStreamResultTest {
         new ExternalLink()
             .setChunkIndex(chunkIndex)
             .setExternalLink(CHUNK_URL_PREFIX + chunkIndex)
-            .setExpiration(Instant.now().plusSeconds(3600L).toString());
+            .setExpiration(Instant.now().plusSeconds(3600L).toString())
+            .setRowOffset(chunkIndex * this.rowsInChunk)
+            .setRowCount(this.rowsInChunk);
     if (!isLast) {
       chunkLink.setNextChunkIndex(chunkIndex + 1);
     }
@@ -293,25 +295,12 @@ public class ArrowStreamResultTest {
       return ChunkLinkFetchResult.endOfStream();
     }
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = new ArrayList<>();
-    for (ExternalLink link : links) {
-      chunkLinks.add(
-          new ChunkLinkFetchResult.ChunkLinkInfo(
-              link.getChunkIndex(),
-              link,
-              link.getRowCount() != null ? link.getRowCount() : 0,
-              link.getRowOffset() != null ? link.getRowOffset() : 0));
-    }
-
     ExternalLink lastLink = links.get(links.size() - 1);
     boolean hasMore = lastLink.getNextChunkIndex() != null;
     long nextFetchIndex = hasMore ? lastLink.getNextChunkIndex() : -1;
-    long nextRowOffset = 0;
-    if (lastLink.getRowOffset() != null && lastLink.getRowCount() != null) {
-      nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
-    }
+    long nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
 
-    return ChunkLinkFetchResult.of(chunkLinks, hasMore, nextFetchIndex, nextRowOffset);
+    return ChunkLinkFetchResult.of(links, hasMore, nextFetchIndex, nextRowOffset);
   }
 
   private File createTestArrowFile(

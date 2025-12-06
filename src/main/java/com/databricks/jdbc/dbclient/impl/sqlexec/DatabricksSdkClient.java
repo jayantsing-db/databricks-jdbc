@@ -445,13 +445,6 @@ public class DatabricksSdkClient implements IDatabricksClient {
     List<ExternalLink> linkList =
         links instanceof List ? (List<ExternalLink>) links : new ArrayList<>(links);
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = new ArrayList<>();
-    for (ExternalLink link : linkList) {
-      chunkLinks.add(
-          new ChunkLinkFetchResult.ChunkLinkInfo(
-              link.getChunkIndex(), link, link.getRowCount(), link.getRowOffset()));
-    }
-
     // Derive continuation info from last link
     ExternalLink lastLink = linkList.get(linkList.size() - 1);
     boolean hasMore = lastLink.getNextChunkIndex() != null;
@@ -460,12 +453,12 @@ public class DatabricksSdkClient implements IDatabricksClient {
 
     LOGGER.debug(
         "Built ChunkLinkFetchResult with {} links, hasMore={}, nextFetchIndex={}, nextRowOffset={}",
-        chunkLinks.size(),
+        linkList.size(),
         hasMore,
         nextFetchIndex,
         nextRowOffset);
 
-    return ChunkLinkFetchResult.of(chunkLinks, hasMore, nextFetchIndex, nextRowOffset);
+    return ChunkLinkFetchResult.of(linkList, hasMore, nextFetchIndex, nextRowOffset);
   }
 
   @Override

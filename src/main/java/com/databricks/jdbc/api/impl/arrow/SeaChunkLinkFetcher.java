@@ -57,11 +57,11 @@ public class SeaChunkLinkFetcher implements ChunkLinkFetcher {
     }
 
     // Find the link for the requested chunk index
-    for (ChunkLinkFetchResult.ChunkLinkInfo linkInfo : result.getChunkLinks()) {
-      if (linkInfo.getChunkIndex() == chunkIndex) {
+    for (ExternalLink link : result.getChunkLinks()) {
+      if (link.getChunkIndex() == chunkIndex) {
         LOGGER.debug(
             "Successfully refetched link for chunk {} of statement {}", chunkIndex, statementId);
-        return linkInfo.getLink();
+        return link;
       }
     }
 

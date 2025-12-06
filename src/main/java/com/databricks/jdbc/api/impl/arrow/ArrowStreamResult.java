@@ -29,7 +29,6 @@ import com.google.common.annotations.VisibleForTesting;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /** Result container for Arrow-based query results. */
 public class ArrowStreamResult implements IExecutionResult {
@@ -111,6 +110,7 @@ public class ArrowStreamResult implements IExecutionResult {
       ChunkLinkFetcher linkFetcher = new SeaChunkLinkFetcher(session, statementId);
       CompressionCodec compressionCodec = resultManifest.getResultCompression();
       int maxChunksInMemory = connectionContext.getCloudFetchThreadPoolSize();
+      int linkPrefetchWindow = connectionContext.getLinkPrefetchWindow();
       int chunkReadyTimeoutSeconds = connectionContext.getChunkReadyTimeoutSeconds();
       double cloudFetchSpeedThreshold = connectionContext.getCloudFetchSpeedThreshold();
 
@@ -124,6 +124,7 @@ public class ArrowStreamResult implements IExecutionResult {
           compressionCodec,
           statementId,
           maxChunksInMemory,
+          linkPrefetchWindow,
           chunkReadyTimeoutSeconds,
           cloudFetchSpeedThreshold,
           initialLinks);
@@ -197,6 +198,7 @@ public class ArrowStreamResult implements IExecutionResult {
 
       ChunkLinkFetcher linkFetcher = new ThriftChunkLinkFetcher(session, statementId);
       int maxChunksInMemory = connectionContext.getCloudFetchThreadPoolSize();
+      int linkPrefetchWindow = connectionContext.getLinkPrefetchWindow();
       int chunkReadyTimeoutSeconds = connectionContext.getChunkReadyTimeoutSeconds();
       double cloudFetchSpeedThreshold = connectionContext.getCloudFetchSpeedThreshold();
 
@@ -209,6 +211,7 @@ public class ArrowStreamResult implements IExecutionResult {
           compressionCodec,
           statementId,
           maxChunksInMemory,
+          linkPrefetchWindow,
           chunkReadyTimeoutSeconds,
           cloudFetchSpeedThreshold,
           initialLinks);
@@ -387,21 +390,13 @@ public class ArrowStreamResult implements IExecutionResult {
             ? (List<ExternalLink>) externalLinks
             : new ArrayList<>(externalLinks);
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks =
-        linkList.stream()
-            .map(
-                link ->
-                    new ChunkLinkFetchResult.ChunkLinkInfo(
-                        link.getChunkIndex(), link, link.getRowCount(), link.getRowOffset()))
-            .collect(Collectors.toList());
-
     // Derive hasMore and nextRowOffset from last link (SEA style)
     ExternalLink lastLink = linkList.get(linkList.size() - 1);
     boolean hasMore = lastLink.getNextChunkIndex() != null;
     long nextFetchIndex = hasMore ? lastLink.getNextChunkIndex() : -1;
     long nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
 
-    return ChunkLinkFetchResult.of(chunkLinks, hasMore, nextFetchIndex, nextRowOffset);
+    return ChunkLinkFetchResult.of(linkList, hasMore, nextFetchIndex, nextRowOffset);
   }
 
   /**
@@ -420,14 +415,14 @@ public class ArrowStreamResult implements IExecutionResult {
       return null;
     }
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = new ArrayList<>();
+    List<ExternalLink> chunkLinks = new ArrayList<>();
     int lastIndex = resultLinks.size() - 1;
     boolean hasMoreRows = resultsResp.hasMoreRows;
 
     for (int i = 0; i < resultLinks.size(); i++) {
       TSparkArrowResultLink thriftLink = resultLinks.get(i);
 
-      // Convert Thrift link to ExternalLink
+      // Convert Thrift link to ExternalLink (sets chunkIndex, rowOffset, rowCount, etc.)
       ExternalLink externalLink = createExternalLink(thriftLink, i);
 
       // For the last link, set nextChunkIndex based on hasMoreRows
@@ -442,9 +437,7 @@ public class ArrowStreamResult implements IExecutionResult {
         externalLink.setNextChunkIndex((long) i + 1);
       }
 
-      chunkLinks.add(
-          new ChunkLinkFetchResult.ChunkLinkInfo(
-              i, externalLink, thriftLink.getRowCount(), thriftLink.getStartRowOffset()));
+      chunkLinks.add(externalLink);
     }
 
     // Calculate next fetch positions from last link

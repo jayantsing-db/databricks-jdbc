@@ -324,7 +324,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       return ChunkLinkFetchResult.of(new ArrayList<>(), hasMoreRows, chunkIndex, rowOffset);
     }
 
-    List<ChunkLinkFetchResult.ChunkLinkInfo> chunkLinks = new ArrayList<>();
+    List<ExternalLink> chunkLinks = new ArrayList<>();
     int lastIndex = resultLinks.size() - 1;
     long nextRowOffset = rowOffset;
     long nextFetchIndex = chunkIndex;
@@ -333,6 +333,8 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       TSparkArrowResultLink thriftLink = resultLinks.get(i);
       long linkChunkIndex = chunkIndex + i;
 
+      // createExternalLink sets chunkIndex, rowOffset, rowCount, byteCount, expiration,
+      // externalLink
       ExternalLink externalLink = createExternalLink(thriftLink, linkChunkIndex);
 
       // Set nextChunkIndex based on position and hasMoreRows
@@ -346,12 +348,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
         externalLink.setNextChunkIndex(linkChunkIndex + 1);
       }
 
-      chunkLinks.add(
-          new ChunkLinkFetchResult.ChunkLinkInfo(
-              linkChunkIndex,
-              externalLink,
-              thriftLink.getRowCount(),
-              thriftLink.getStartRowOffset()));
+      chunkLinks.add(externalLink);
     }
 
     LOGGER.debug(
