@@ -197,7 +197,13 @@ public enum DatabricksJdbcUrlParams {
       "Number of chunk links to prefetch ahead of consumption. "
           + "Higher values reduce latency by having links ready sooner. "
           + "Lower values reduce risk of link expiry for slow processing workloads",
-      "128");
+      "128"),
+  API_RETRIABLE_HTTP_CODES(
+      "ApiRetriableHttpCodes",
+      "Comma-separated list of HTTP status codes that should be retried irrespective of Retry-After header.",
+      ""),
+  API_RETRY_TIMEOUT(
+      "ApiRetryTimeout", "Timeout for retrying API retriable codes in seconds", "300");
 
   private final String paramName;
   private final String defaultValue;
