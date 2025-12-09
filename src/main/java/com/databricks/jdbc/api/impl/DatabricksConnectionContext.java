@@ -4,6 +4,7 @@ import static com.databricks.jdbc.common.DatabricksJdbcConstants.*;
 import static com.databricks.jdbc.common.DatabricksJdbcUrlParams.AUTH_SCOPE;
 import static com.databricks.jdbc.common.DatabricksJdbcUrlParams.DEFAULT_STRING_COLUMN_LENGTH;
 import static com.databricks.jdbc.common.EnvironmentVariables.DEFAULT_ROW_LIMIT_PER_BLOCK;
+import static com.databricks.jdbc.common.util.StringUtil.parseIntegerSet;
 import static com.databricks.jdbc.common.util.UserAgentManager.USER_AGENT_SEA_CLIENT;
 import static com.databricks.jdbc.common.util.UserAgentManager.USER_AGENT_THRIFT_CLIENT;
 import static com.databricks.jdbc.common.util.WildcardUtil.isNullOrEmpty;
@@ -28,6 +29,7 @@ import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
 import java.net.URI;
 import java.util.*;
+import java.util.Collections;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 import org.apache.http.client.utils.URIBuilder;
@@ -275,8 +277,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getAsyncExecPollInterval() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.POLL_INTERVAL));
+  public int getAsyncExecPollInterval() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.POLL_INTERVAL),
+        DatabricksJdbcUrlParams.POLL_INTERVAL.getParamName());
   }
 
   @Override
@@ -405,13 +409,17 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getLogFileSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.LOG_FILE_SIZE));
+  public int getLogFileSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.LOG_FILE_SIZE),
+        DatabricksJdbcUrlParams.LOG_FILE_SIZE.getParamName());
   }
 
   @Override
-  public int getLogFileCount() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.LOG_FILE_COUNT));
+  public int getLogFileCount() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.LOG_FILE_COUNT),
+        DatabricksJdbcUrlParams.LOG_FILE_COUNT.getParamName());
   }
 
   @Override
@@ -476,8 +484,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getCloudFetchThreadPoolSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE));
+  public int getCloudFetchThreadPoolSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE),
+        DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE.getParamName());
   }
 
   @Override
@@ -665,6 +675,17 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
+  public Set<Integer> getApiRetriableHttpCodes() {
+    String codes = getParameter(DatabricksJdbcUrlParams.API_RETRIABLE_HTTP_CODES);
+    return parseIntegerSet(codes);
+  }
+
+  @Override
+  public int getApiRetryTimeout() {
+    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.API_RETRY_TIMEOUT));
+  }
+
+  @Override
   public int getIdleHttpConnectionExpiry() {
     return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.IDLE_HTTP_CONNECTION_EXPIRY));
   }
@@ -833,8 +854,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getMaxBatchSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.MAX_BATCH_SIZE));
+  public int getMaxBatchSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.MAX_BATCH_SIZE),
+        DatabricksJdbcUrlParams.MAX_BATCH_SIZE.getParamName());
   }
 
   @Override
@@ -844,12 +867,21 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public int getTelemetryBatchSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE));
+    try {
+      return ValidationUtil.validateAndParsePositiveInteger(
+          getParameter(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE),
+          DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE.getParamName());
+    } catch (DatabricksValidationException e) {
+      // We don't want to throw any errors related to telemetry.
+      return Integer.parseInt(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE.getDefaultValue());
+    }
   }
 
   @Override
-  public int getBatchInsertSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.BATCH_INSERT_SIZE));
+  public int getBatchInsertSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.BATCH_INSERT_SIZE),
+        DatabricksJdbcUrlParams.BATCH_INSERT_SIZE.getParamName());
   }
 
   @Override
@@ -928,8 +960,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getHttpConnectionPoolSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE));
+  public int getHttpConnectionPoolSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE),
+        DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE.getParamName());
   }
 
   @Override
@@ -972,13 +1006,14 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public int getRowsFetchedPerBlock() {
-    int maxRows = DEFAULT_ROW_LIMIT_PER_BLOCK;
     try {
-      maxRows = Integer.parseInt(getParameter(DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK));
-    } catch (NumberFormatException e) {
+      return ValidationUtil.validateAndParsePositiveInteger(
+          getParameter(DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK),
+          DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK.getParamName());
+    } catch (DatabricksValidationException exception) {
       LOGGER.warn("Invalid value for RowsFetchedPerBlock, using default value");
     }
-    return maxRows;
+    return DEFAULT_ROW_LIMIT_PER_BLOCK;
   }
 
   /** {@inheritDoc} */
