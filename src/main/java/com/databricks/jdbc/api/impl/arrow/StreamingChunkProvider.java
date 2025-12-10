@@ -289,6 +289,15 @@ public class StreamingChunkProvider implements ChunkProvider {
     return totalRowCount.get();
   }
 
+  /**
+   * Returns the total chunk count only when all chunks have been discovered.
+   *
+   * <p>In streaming mode, the total chunk count is unknown until we reach the end of the stream.
+   * This method returns -1 if chunks are still being discovered, and the actual count once all
+   * chunks have been fetched.
+   *
+   * @return the total chunk count if all chunks have been discovered, or -1 if still streaming
+   */
   @Override
   public long getChunkCount() {
     // In streaming mode, we don't know total chunks until end of stream

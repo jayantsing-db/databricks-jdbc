@@ -330,16 +330,16 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
     long nextRowOffset = rowOffset;
     long nextFetchIndex = chunkIndex;
 
-    for (int i = 0; i < resultLinks.size(); i++) {
-      TSparkArrowResultLink thriftLink = resultLinks.get(i);
-      long linkChunkIndex = chunkIndex + i;
+    for (int linkIndex = 0; linkIndex < resultLinks.size(); linkIndex++) {
+      TSparkArrowResultLink thriftLink = resultLinks.get(linkIndex);
+      long linkChunkIndex = chunkIndex + linkIndex;
 
       // createExternalLink sets chunkIndex, rowOffset, rowCount, byteCount, expiration,
       // externalLink
       ExternalLink externalLink = createExternalLink(thriftLink, linkChunkIndex);
 
       // Set nextChunkIndex based on position and hasMoreRows
-      if (i == lastIndex) {
+      if (linkIndex == lastIndex) {
         if (hasMoreRows) {
           externalLink.setNextChunkIndex(linkChunkIndex + 1);
           nextFetchIndex = linkChunkIndex + 1;

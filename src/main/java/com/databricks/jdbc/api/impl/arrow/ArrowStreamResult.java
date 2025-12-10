@@ -419,22 +419,22 @@ public class ArrowStreamResult implements IExecutionResult {
     int lastIndex = resultLinks.size() - 1;
     boolean hasMoreRows = resultsResp.hasMoreRows;
 
-    for (int i = 0; i < resultLinks.size(); i++) {
-      TSparkArrowResultLink thriftLink = resultLinks.get(i);
+    for (int linkIndex = 0; linkIndex < resultLinks.size(); linkIndex++) {
+      TSparkArrowResultLink thriftLink = resultLinks.get(linkIndex);
 
       // Convert Thrift link to ExternalLink (sets chunkIndex, rowOffset, rowCount, etc.)
-      ExternalLink externalLink = createExternalLink(thriftLink, i);
+      ExternalLink externalLink = createExternalLink(thriftLink, linkIndex);
 
       // For the last link, set nextChunkIndex based on hasMoreRows
-      if (i == lastIndex) {
+      if (linkIndex == lastIndex) {
         if (hasMoreRows) {
           // More chunks available - next fetch should start from lastIndex + 1
-          externalLink.setNextChunkIndex((long) i + 1);
+          externalLink.setNextChunkIndex((long) linkIndex + 1);
         }
         // If hasMoreRows is false, nextChunkIndex remains null (end of stream)
       } else {
         // Not the last link - next chunk follows immediately
-        externalLink.setNextChunkIndex((long) i + 1);
+        externalLink.setNextChunkIndex((long) linkIndex + 1);
       }
 
       chunkLinks.add(externalLink);
