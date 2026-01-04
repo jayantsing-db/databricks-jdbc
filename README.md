@@ -95,12 +95,7 @@ Optional parameters:
 
 ### Logging
 
-The driver supports both SLF4J and Java Util Logging (JUL) frameworks:
-
-- **SLF4J**: Enable with `-Dcom.databricks.jdbc.loggerImpl=SLF4JLOGGER`
-- **JUL**: Enable with `-Dcom.databricks.jdbc.loggerImpl=JDKLOGGER` (default)
-
-For detailed logging configuration options, see [Logging Documentation](./docs/LOGGING.md).
+The driver supports logging configuration via JDBC URL parameters or system properties. For detailed configuration options, see [Logging Documentation](./docs/LOGGING.md).
 
 ## Running Tests
 
