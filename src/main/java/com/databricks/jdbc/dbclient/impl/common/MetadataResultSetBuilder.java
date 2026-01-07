@@ -1,7 +1,10 @@
 package com.databricks.jdbc.dbclient.impl.common;
 
 import static com.databricks.jdbc.common.MetadataResultConstants.*;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.GEOGRAPHY;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.GEOMETRY;
 import static com.databricks.jdbc.common.util.DatabricksTypeUtil.INTERVAL;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.MEASURE;
 import static com.databricks.jdbc.common.util.WildcardUtil.isNullOrEmpty;
 import static com.databricks.jdbc.dbclient.impl.common.CommandConstants.*;
 import static com.databricks.jdbc.dbclient.impl.common.TypeValConstants.*;
@@ -87,6 +90,14 @@ public class MetadataResultSetBuilder {
         getRows(resultSet, TABLE_COLUMNS, defaultAdapter).stream()
             .filter(row -> allowedTableTypes.contains(row.get(3))) // Filtering based on table type
             .collect(Collectors.toList());
+
+    // Sort in order TABLE_TYPE, TABLE_CAT, TABLE_SCHEM, TABLE_NAME (matching Thrift mode)
+    rows.sort(
+        Comparator.comparing((List<Object> r) -> (String) r.get(3)) // TABLE_TYPE
+            .thenComparing(r -> (String) r.get(0)) // TABLE_CAT
+            .thenComparing(r -> (String) r.get(1)) // TABLE_SCHEM
+            .thenComparing(r -> (String) r.get(2))); // TABLE_NAME
+
     return buildResultSet(
         TABLE_COLUMNS,
         rows,
@@ -96,9 +107,16 @@ public class MetadataResultSetBuilder {
   }
 
   public DatabricksResultSet getTableTypesResult() {
+    List<List<Object>> tableTypesRows =
+        ctx.getEnableMetricViewMetadata()
+            ? TABLE_TYPES_ROWS
+            : TABLE_TYPES_ROWS.stream()
+                .filter(row -> !"METRIC_VIEW".equals(row.get(0)))
+                .collect(Collectors.toList());
+
     return buildResultSet(
         TABLE_TYPE_COLUMNS,
-        TABLE_TYPES_ROWS,
+        tableTypesRows,
         GET_TABLE_TYPE_STATEMENT_ID,
         CommandName.LIST_TABLE_TYPES);
   }
@@ -185,8 +203,11 @@ public class MetadataResultSetBuilder {
             if (typeVal == null) { // safety check
               object = null;
             } else {
-              // Check if complex datatype support is disabled and this is a complex type
-              if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
+              // Check if geospatial support is disabled and this is a geospatial type
+              if (!ctx.isGeoSpatialSupportEnabled() && isGeospatialType(typeVal)) {
+                object = Types.VARCHAR;
+              } else if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
+                // Check if complex datatype support is disabled and this is a complex type
                 object = Types.VARCHAR;
               } else {
                 object = getCode(stripBaseTypeName(typeVal));
@@ -230,7 +251,10 @@ public class MetadataResultSetBuilder {
               }
             } catch (SQLException e) {
               if (mappedColumn.getColumnName().equals(DATA_TYPE_COLUMN.getColumnName())) {
-                if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
+                // Check if geospatial support is disabled and this is a geospatial type
+                if (!ctx.isGeoSpatialSupportEnabled() && isGeospatialType(typeVal)) {
+                  object = Types.VARCHAR;
+                } else if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
                   object = Types.VARCHAR;
                 } else {
                   object = getCode(stripBaseTypeName(typeVal));
@@ -267,7 +291,8 @@ public class MetadataResultSetBuilder {
             // Handle TYPE_NAME separately for potential modifications
             if (mappedColumn.getColumnName().equals(COLUMN_TYPE_COLUMN.getColumnName())) {
               if (typeVal != null
-                  && (typeVal.contains(ARRAY_TYPE)
+                  && (typeVal.contains(MEASURE)
+                      || typeVal.contains(ARRAY_TYPE)
                       || typeVal.contains(MAP_TYPE)
                       || typeVal.contains(
                           STRUCT_TYPE))) { // for complex data types, do not strip type name
@@ -541,6 +566,20 @@ public class MetadataResultSetBuilder {
     return baseType.contains(ARRAY_TYPE)
         || baseType.contains(MAP_TYPE)
         || baseType.contains(STRUCT_TYPE);
+  }
+
+  /**
+   * Checks if the given type string represents a geospatial type (GEOMETRY or GEOGRAPHY).
+   *
+   * @param typeVal The type string to check
+   * @return true if the type is a geospatial type, false otherwise
+   */
+  private boolean isGeospatialType(String typeVal) {
+    if (typeVal == null) {
+      return false;
+    }
+    String baseType = stripBaseTypeName(typeVal);
+    return baseType.contains(GEOMETRY) || baseType.contains(GEOGRAPHY);
   }
 
   int getCode(String s) {
@@ -888,8 +927,11 @@ public class MetadataResultSetBuilder {
             if (typeVal == null) { // safety check
               object = null;
             } else {
-              // Check if complex datatype support is disabled and this is a complex type
-              if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
+              // Check if geospatial support is disabled and this is a geospatial type
+              if (!ctx.isGeoSpatialSupportEnabled() && isGeospatialType(typeVal)) {
+                object = Types.VARCHAR;
+              } else if (!ctx.isComplexDatatypeSupportEnabled() && isComplexType(typeVal)) {
+                // Check if complex datatype support is disabled and this is a complex type
                 object = Types.VARCHAR;
               } else {
                 object = getCode(stripBaseTypeName(typeVal));
@@ -965,7 +1007,8 @@ public class MetadataResultSetBuilder {
               // Handle TYPE_NAME separately for potential modifications
               if (column.getColumnName().equals(COLUMN_TYPE_COLUMN.getColumnName())) {
                 if (typeVal != null
-                    && (typeVal.contains(ARRAY_TYPE)
+                    && (typeVal.contains(MEASURE)
+                        || typeVal.contains(ARRAY_TYPE)
                         || typeVal.contains(MAP_TYPE)
                         || typeVal.contains(STRUCT_TYPE))) {
                   object = typeVal;

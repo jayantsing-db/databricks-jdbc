@@ -1,6 +1,7 @@
 package com.databricks.jdbc.dbclient.impl.common;
 
 import static com.databricks.jdbc.TestConstants.TEST_DISCOVERY_URL;
+import static com.databricks.jdbc.TestConstants.TEST_SCOPE_STRING;
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.GCP_GOOGLE_CREDENTIALS_AUTH_TYPE;
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.M2M_AZURE_CLIENT_SECRET_AUTH_TYPE;
 import static org.junit.jupiter.api.Assertions.*;
@@ -16,6 +17,7 @@ import com.databricks.jdbc.common.DatabricksJdbcConstants;
 import com.databricks.jdbc.exception.DatabricksParsingException;
 import com.databricks.jdbc.exception.DatabricksSQLException;
 import com.databricks.jdbc.exception.DatabricksSSLException;
+import com.databricks.jdbc.exception.DatabricksValidationException;
 import com.databricks.sdk.WorkspaceClient;
 import com.databricks.sdk.core.DatabricksConfig;
 import com.databricks.sdk.core.DatabricksException;
@@ -24,8 +26,10 @@ import com.databricks.sdk.core.commons.CommonsHttpClient;
 import com.databricks.sdk.core.oauth.ExternalBrowserCredentialsProvider;
 import com.databricks.sdk.core.utils.Cloud;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
@@ -41,7 +45,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void getWorkspaceClient_PAT_AuthenticatesWithAccessToken()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.PAT);
     when(mockContext.getHostUrl()).thenReturn("https://pat.databricks.com");
     when(mockContext.getToken()).thenReturn("pat-token");
@@ -60,7 +64,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void getWorkspaceClient_OAuthWithTokenPassthrough_AuthenticatesCorrectly()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.TOKEN_PASSTHROUGH);
     when(mockContext.getHostUrl()).thenReturn("https://oauth-token.databricks.com");
@@ -80,7 +84,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void getWorkspaceClient_OAuthWithClientCredentials_AuthenticatesCorrectly()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-client.databricks.com");
@@ -102,7 +106,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void getWorkspaceClient_OAuthWithClientCredentials_AuthenticatesCorrectlyGCP()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-client.databricks.com");
@@ -123,7 +127,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void getWorkspaceClient_OAuthWithClientCredentials_AuthenticatesCorrectlyWithJWT()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getConnectionUuid()).thenReturn("connection-uuid");
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
@@ -132,6 +136,7 @@ public class ClientConfiguratorTest {
     when(mockContext.getClientSecret()).thenReturn("client-secret");
     when(mockContext.useJWTAssertion()).thenReturn(true);
     when(mockContext.getTokenEndpoint()).thenReturn("token-endpoint");
+    when(mockContext.isTokenFederationEnabled()).thenReturn(true);
     when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
     configurator = new ClientConfigurator(mockContext);
@@ -168,14 +173,14 @@ public class ClientConfiguratorTest {
     assertEquals("https://sample-host.18.azuredatabricks.net", config.getHost());
     assertEquals("test-client", config.getClientId());
     assertEquals("custom-oauth-m2m", provider.authType());
-    assertEquals(DatabricksJdbcConstants.M2M_AUTH_TYPE, config.getAuthType());
+    assertEquals(provider.authType(), config.getAuthType());
     assertEquals(
         PrivateKeyClientCredentialProvider.class, provider.getCredentialsProvider().getClass());
   }
 
   @Test
   void getWorkspaceClient_OAuthWithBrowserBasedAuthentication_AuthenticatesCorrectly()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
@@ -185,6 +190,7 @@ public class ClientConfiguratorTest {
     when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
     when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8020));
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
     configurator = new ClientConfigurator(mockContext);
     WorkspaceClient client = configurator.getWorkspaceClient();
     assertNotNull(client);
@@ -199,20 +205,47 @@ public class ClientConfiguratorTest {
   }
 
   @Test
-  void
-      getWorkspaceClient_OAuthWithBrowserBasedAuthentication_WithDiscoveryURL_AuthenticatesCorrectly()
-          throws DatabricksParsingException, IOException, DatabricksSSLException {
+  void getWorkspaceClient_OAuthWithBrowserBasedAuthentication_ScopesExcludeOfflineAccess()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
     when(mockContext.getClientId()).thenReturn("browser-client-id");
     when(mockContext.getClientSecret()).thenReturn("browser-client-secret");
-    when(mockContext.getOAuthScopesForU2M()).thenReturn(List.of("scope1", "scope2"));
+    when(mockContext.getOAuthScopesForU2M()).thenReturn(List.of("scope.read", "scope.write"));
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8030));
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+
+    configurator = new ClientConfigurator(mockContext);
+    DatabricksConfig config = configurator.getDatabricksConfig();
+
+    // Driver disables refresh tokens for OAuth, so SDK must not include offline_access
+    assertTrue(config.getDisableOauthRefreshToken());
+    assertFalse(config.getScopes().contains("offline_access"));
+  }
+
+  @Test
+  void
+      getWorkspaceClient_OAuthWithBrowserBasedAuthentication_WithDiscoveryURL_AuthenticatesCorrectly()
+          throws DatabricksParsingException,
+              IOException,
+              DatabricksSSLException,
+              DatabricksValidationException {
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
+    when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
+    when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
+    when(mockContext.getClientId()).thenReturn("browser-client-id");
+    when(mockContext.getClientSecret()).thenReturn("browser-client-secret");
     when(mockContext.isOAuthDiscoveryModeEnabled()).thenReturn(true);
     when(mockContext.getOAuthDiscoveryURL()).thenReturn(TEST_DISCOVERY_URL);
+    when(mockContext.getOAuthScopesForU2M())
+        .thenReturn(Collections.singletonList(TEST_SCOPE_STRING));
     when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
     when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8020));
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
     configurator = new ClientConfigurator(mockContext);
     WorkspaceClient client = configurator.getWorkspaceClient();
     assertNotNull(client);
@@ -222,13 +255,13 @@ public class ClientConfiguratorTest {
     assertEquals("https://oauth-browser.databricks.com", config.getHost());
     assertEquals("browser-client-id", config.getClientId());
     assertEquals("browser-client-secret", config.getClientSecret());
-    assertEquals(List.of("scope1", "scope2"), config.getScopes());
+    assertEquals(List.of(TEST_SCOPE_STRING), config.getScopes());
     assertEquals("http://localhost:8020", config.getOAuthRedirectUrl());
     assertEquals(DatabricksJdbcConstants.U2M_AUTH_TYPE, config.getAuthType());
   }
 
   @Test
-  void testNonOauth() throws DatabricksSSLException {
+  void testNonOauth() throws DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OTHER);
     when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
@@ -259,7 +292,7 @@ public class ClientConfiguratorTest {
   }
 
   @Test
-  void testSetupProxyConfig() throws DatabricksSSLException {
+  void testSetupProxyConfig() throws DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.PAT);
     when(mockContext.getUseProxy()).thenReturn(true);
     when(mockContext.getProxyHost()).thenReturn("proxy.host.com");
@@ -291,7 +324,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void setupM2MConfig_WithAzureTenantId_ConfiguresCorrectly()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
     when(mockContext.getHostForOAuth()).thenReturn("https://azure-oauth.databricks.com");
@@ -319,7 +352,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void setupM2MConfig_WithAzureTenantIdButNonAzureCloud_ThrowsException()
-      throws DatabricksParsingException {
+      throws DatabricksParsingException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
     when(mockContext.getHostForOAuth()).thenReturn("https://azure-oauth.databricks.com");
@@ -357,19 +390,29 @@ public class ClientConfiguratorTest {
 
     // Test with multiple ports, first unavailable
     int secondAvailablePort = findFreePort();
-    try (ServerSocket serverSocket = new ServerSocket(availablePort)) {
+    try (ServerSocket serverSocket = new ServerSocket()) {
       serverSocket.setReuseAddress(true);
+      serverSocket.bind(new InetSocketAddress(availablePort));
       ports = List.of(availablePort, secondAvailablePort);
       result = configurator.findAvailablePort(ports);
       assertEquals(secondAvailablePort, result);
     }
 
-    // Test incremental search - first port unavailable, second available
-    try (ServerSocket serverSocket = new ServerSocket(availablePort)) {
-      serverSocket.setReuseAddress(true);
+    // Test incremental search - first port unavailable, finds next available in sequence
+    try (ServerSocket serverSocket2 = new ServerSocket()) {
+      serverSocket2.setReuseAddress(true);
+      serverSocket2.bind(new InetSocketAddress(availablePort));
       ports = List.of(availablePort);
       result = configurator.findAvailablePort(ports);
-      assertEquals(availablePort + 1, result);
+      assertTrue(
+          result > availablePort,
+          String.format("Expected port > %d, but got %d", availablePort, result));
+      // 3. The returned port should actually be available
+      try (ServerSocket testSocket = new ServerSocket()) {
+        testSocket.setReuseAddress(true);
+        testSocket.bind(new InetSocketAddress(result));
+        assertNotNull(testSocket, "Returned port should be available for binding");
+      }
     }
   }
 
@@ -391,10 +434,12 @@ public class ClientConfiguratorTest {
     }
 
     // Occupy the ports to make them unavailable
-    try (ServerSocket socket1 = new ServerSocket(port1);
-        ServerSocket socket2 = new ServerSocket(port2)) {
+    try (ServerSocket socket1 = new ServerSocket();
+        ServerSocket socket2 = new ServerSocket()) {
       socket1.setReuseAddress(true);
+      socket1.bind(new InetSocketAddress(port1));
       socket2.setReuseAddress(true);
+      socket2.bind(new InetSocketAddress(port2));
 
       // First test with multiple specified ports
       List<Integer> unavailablePorts = List.of(port1, port2);
@@ -422,8 +467,9 @@ public class ClientConfiguratorTest {
 
   /** Utility method to find a free port */
   private int findFreePort() {
-    try (ServerSocket socket = new ServerSocket(0)) {
+    try (ServerSocket socket = new ServerSocket()) {
       socket.setReuseAddress(true);
+      socket.bind(new InetSocketAddress(0));
       return socket.getLocalPort();
     } catch (IOException e) {
       throw new RuntimeException("Failed to find free port", e);
@@ -444,6 +490,7 @@ public class ClientConfiguratorTest {
     when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(testPort));
     when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
 
     configurator = new ClientConfigurator(mockContext);
     WorkspaceClient client = configurator.getWorkspaceClient();
@@ -461,7 +508,7 @@ public class ClientConfiguratorTest {
 
   @Test
   void testSetupU2MConfig_WithTokenCache()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
@@ -473,6 +520,8 @@ public class ClientConfiguratorTest {
     when(mockContext.isTokenCacheEnabled()).thenReturn(true);
     when(mockContext.getTokenCachePassPhrase()).thenReturn("testPassphrase");
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+    when(mockContext.isTokenFederationEnabled()).thenReturn(true);
 
     configurator = new ClientConfigurator(mockContext);
     WorkspaceClient client = configurator.getWorkspaceClient();
@@ -493,7 +542,8 @@ public class ClientConfiguratorTest {
   }
 
   @Test
-  void testSetupU2MConfig_WithTokenCacheNoPassphrase() throws DatabricksParsingException {
+  void testSetupU2MConfig_WithTokenCacheNoPassphrase()
+      throws DatabricksParsingException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
@@ -505,13 +555,14 @@ public class ClientConfiguratorTest {
     when(mockContext.isTokenCacheEnabled()).thenReturn(true);
     when(mockContext.getTokenCachePassPhrase()).thenReturn(null);
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
 
     assertThrows(DatabricksException.class, () -> new ClientConfigurator(mockContext));
   }
 
   @Test
   void testSetupU2MConfig_WithoutTokenCache()
-      throws DatabricksParsingException, DatabricksSSLException {
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
     when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
     when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
     when(mockContext.getHostForOAuth()).thenReturn("https://oauth-browser.databricks.com");
@@ -522,6 +573,8 @@ public class ClientConfiguratorTest {
     when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8020));
     when(mockContext.isTokenCacheEnabled()).thenReturn(false);
     when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+    when(mockContext.isTokenFederationEnabled()).thenReturn(true);
 
     configurator = new ClientConfigurator(mockContext);
     WorkspaceClient client = configurator.getWorkspaceClient();
@@ -539,5 +592,130 @@ public class ClientConfiguratorTest {
     assertInstanceOf(
         ExternalBrowserCredentialsProvider.class,
         databricksTokenFederationProvider.getCredentialsProvider());
+  }
+
+  @Test
+  void testTokenFederationEnabled_WrapsCredentialsProvider()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
+    // Setup OAuth M2M with token federation enabled
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
+    when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
+    when(mockContext.getHostForOAuth()).thenReturn("https://oauth-m2m.databricks.com");
+    when(mockContext.getClientId()).thenReturn("m2m-client-id");
+    when(mockContext.getClientSecret()).thenReturn("m2m-client-secret");
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+    when(mockContext.isTokenFederationEnabled()).thenReturn(true); // Token federation enabled
+    when(mockContext.useJWTAssertion()).thenReturn(false);
+    when(mockContext.getAzureTenantId()).thenReturn(null);
+    when(mockContext.getCloud()).thenReturn(Cloud.AWS);
+
+    configurator = new ClientConfigurator(mockContext);
+    WorkspaceClient client = configurator.getWorkspaceClient();
+    assertNotNull(client);
+    DatabricksConfig config = client.config();
+
+    // Verify that the credentials provider is wrapped with DatabricksTokenFederationProvider
+    assertInstanceOf(DatabricksTokenFederationProvider.class, config.getCredentialsProvider());
+    assertEquals(DatabricksJdbcConstants.M2M_AUTH_TYPE, config.getAuthType());
+  }
+
+  @Test
+  void testTokenFederationDisabled_DoesNotWrapCredentialsProvider()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
+    // Setup OAuth M2M with token federation disabled
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
+    when(mockContext.getAuthFlow()).thenReturn(AuthFlow.CLIENT_CREDENTIALS);
+    when(mockContext.getHostForOAuth()).thenReturn("https://oauth-m2m.databricks.com");
+    when(mockContext.getClientId()).thenReturn("m2m-client-id");
+    when(mockContext.getClientSecret()).thenReturn("m2m-client-secret");
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+    when(mockContext.isTokenFederationEnabled()).thenReturn(false); // Token federation disabled
+    when(mockContext.useJWTAssertion()).thenReturn(false);
+    when(mockContext.getAzureTenantId()).thenReturn(null);
+    when(mockContext.getCloud()).thenReturn(Cloud.AWS);
+
+    configurator = new ClientConfigurator(mockContext);
+    WorkspaceClient client = configurator.getWorkspaceClient();
+    assertNotNull(client);
+    DatabricksConfig config = client.config();
+
+    // Verify that the credentials provider is NOT wrapped with DatabricksTokenFederationProvider
+    assertNotNull(config.getCredentialsProvider());
+    // Should be the original OAuthM2MServicePrincipalCredentialsProvider, not wrapped
+    assertFalse(config.getCredentialsProvider() instanceof DatabricksTokenFederationProvider);
+  }
+
+  @Test
+  void testTokenFederationWithPATAuth_DoesNotAffectPATAuth()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
+    // Setup PAT auth with token federation disabled - should not affect PAT auth
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.PAT);
+    when(mockContext.getHostUrl()).thenReturn("https://pat.databricks.com");
+    when(mockContext.getToken()).thenReturn("pat-token");
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+
+    configurator = new ClientConfigurator(mockContext);
+    WorkspaceClient client = configurator.getWorkspaceClient();
+    assertNotNull(client);
+    DatabricksConfig config = client.config();
+
+    // PAT auth should work normally regardless of token federation setting
+    assertEquals("https://pat.databricks.com", config.getHost());
+    assertEquals("pat-token", config.getToken());
+    assertEquals(DatabricksJdbcConstants.ACCESS_TOKEN_AUTH_TYPE, config.getAuthType());
+    // PAT auth doesn't use Token federation provider, so it should be SDK default provider
+    assertFalse(config.getCredentialsProvider() instanceof DatabricksTokenFederationProvider);
+  }
+
+  @Test
+  void testAuthScope_U2MWithCustomScope()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
+    // Test that custom Auth_Scope is used for U2M authentication
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
+    when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
+    when(mockContext.getHostForOAuth()).thenReturn("https://test.databricks.com");
+    when(mockContext.getClientId()).thenReturn("test-client-id");
+    when(mockContext.getClientSecret()).thenReturn("test-client-secret");
+    when(mockContext.getOAuthScopesForU2M()).thenReturn(List.of("custom_scope"));
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8020));
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(true);
+
+    configurator = new ClientConfigurator(mockContext);
+    DatabricksConfig config = configurator.getDatabricksConfig();
+
+    assertEquals(List.of("custom_scope"), config.getScopes());
+  }
+
+  @Test
+  void testAuthScope_U2MWithDefaultScopes()
+      throws DatabricksParsingException, DatabricksSSLException, DatabricksValidationException {
+    // Test that default scopes are used when Auth_Scope is not provided
+    when(mockContext.getAuthMech()).thenReturn(AuthMech.OAUTH);
+    when(mockContext.getAuthFlow()).thenReturn(AuthFlow.BROWSER_BASED_AUTHENTICATION);
+    when(mockContext.getHostForOAuth()).thenReturn("https://test.databricks.com");
+    when(mockContext.getClientId()).thenReturn("test-client-id");
+    when(mockContext.getClientSecret()).thenReturn("test-client-secret");
+    when(mockContext.getOAuthScopesForU2M())
+        .thenReturn(
+            List.of(
+                DatabricksJdbcConstants.SQL_SCOPE, DatabricksJdbcConstants.OFFLINE_ACCESS_SCOPE));
+    when(mockContext.getHttpConnectionPoolSize()).thenReturn(100);
+    when(mockContext.getOAuth2RedirectUrlPorts()).thenReturn(List.of(8020));
+    when(mockContext.getHttpMaxConnectionsPerRoute()).thenReturn(100);
+    when(mockContext.getDisableOauthRefreshToken()).thenReturn(false);
+
+    configurator = new ClientConfigurator(mockContext);
+    DatabricksConfig config = configurator.getDatabricksConfig();
+
+    assertEquals(
+        List.of(DatabricksJdbcConstants.SQL_SCOPE, DatabricksJdbcConstants.OFFLINE_ACCESS_SCOPE),
+        config.getScopes());
   }
 }

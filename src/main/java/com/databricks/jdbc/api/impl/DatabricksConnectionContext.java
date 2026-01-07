@@ -1,14 +1,18 @@
 package com.databricks.jdbc.api.impl;
 
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.*;
+import static com.databricks.jdbc.common.DatabricksJdbcUrlParams.AUTH_SCOPE;
 import static com.databricks.jdbc.common.DatabricksJdbcUrlParams.DEFAULT_STRING_COLUMN_LENGTH;
 import static com.databricks.jdbc.common.EnvironmentVariables.DEFAULT_ROW_LIMIT_PER_BLOCK;
+import static com.databricks.jdbc.common.util.StringUtil.parseIntegerSet;
 import static com.databricks.jdbc.common.util.UserAgentManager.USER_AGENT_SEA_CLIENT;
 import static com.databricks.jdbc.common.util.UserAgentManager.USER_AGENT_THRIFT_CLIENT;
 import static com.databricks.jdbc.common.util.WildcardUtil.isNullOrEmpty;
 
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
 import com.databricks.jdbc.common.*;
+import com.databricks.jdbc.common.SeaCircuitBreakerManager;
+import com.databricks.jdbc.common.safe.DatabricksDriverFeatureFlagsContextFactory;
 import com.databricks.jdbc.common.util.ValidationUtil;
 import com.databricks.jdbc.exception.DatabricksDriverException;
 import com.databricks.jdbc.exception.DatabricksParsingException;
@@ -22,9 +26,11 @@ import com.databricks.sdk.core.ProxyConfig;
 import com.databricks.sdk.core.utils.Cloud;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
 import java.net.URI;
 import java.util.*;
+import java.util.Collections;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 import org.apache.http.client.utils.URIBuilder;
@@ -33,13 +39,17 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   private static final JdbcLogger LOGGER =
       JdbcLoggerFactory.getLogger(DatabricksConnectionContext.class);
+
+  private static final String SQL_EXEC_FLAG_NAME =
+      "databricks.partnerplatform.clientConfigsFeatureFlags.enableSqlExecForJdbc";
+
   private final String host;
   @VisibleForTesting final int port;
   private final String schema;
   private final String connectionURL;
   private final IDatabricksComputeResource computeResource;
   private final Map<String, String> customHeaders;
-  private DatabricksClientType clientType;
+  private Supplier<DatabricksClientType> clientTypeSupplier;
   @VisibleForTesting final ImmutableMap<String, String> parameters;
   @VisibleForTesting final String connectionUuid;
 
@@ -58,7 +68,18 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
     this.customHeaders = parseCustomHeaders(parameters);
     this.computeResource = buildCompute();
     this.connectionUuid = UUID.randomUUID().toString();
-    this.clientType = getClientTypeFromContext();
+    this.clientTypeSupplier =
+        new Supplier<>() {
+          private DatabricksClientType cType;
+
+          @Override
+          public synchronized DatabricksClientType get() {
+            if (cType == null) {
+              cType = getClientTypeFromContext();
+            }
+            return cType;
+          }
+        };
   }
 
   private DatabricksConnectionContext(
@@ -236,6 +257,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
         .equals("1");
   }
 
+  public boolean getEnableMultipleCatalogSupport() {
+    return getParameter(DatabricksJdbcUrlParams.ENABLE_MULTIPLE_CATALOG_SUPPORT, "1").equals("1");
+  }
+
   @Override
   public String getHostForOAuth() {
     return this.host;
@@ -253,8 +278,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getAsyncExecPollInterval() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.POLL_INTERVAL));
+  public int getAsyncExecPollInterval() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.POLL_INTERVAL),
+        DatabricksJdbcUrlParams.POLL_INTERVAL.getParamName());
   }
 
   @Override
@@ -303,13 +330,12 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public List<String> getOAuthScopesForU2M() throws DatabricksParsingException {
-    if (getCloud() == Cloud.AWS || getCloud() == Cloud.GCP) {
-      return Arrays.asList(
-          DatabricksJdbcConstants.SQL_SCOPE, DatabricksJdbcConstants.OFFLINE_ACCESS_SCOPE);
-    } else {
-      // Default scope is already being set for Azure in databricks-sdk.
-      return null;
+    if (getParameter(AUTH_SCOPE) != null) {
+      return Collections.singletonList(getAuthScope());
     }
+    // Use uniform default scopes for all clouds: sql and offline_access
+    return Arrays.asList(
+        DatabricksJdbcConstants.SQL_SCOPE, DatabricksJdbcConstants.OFFLINE_ACCESS_SCOPE);
   }
 
   @Override
@@ -380,13 +406,17 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getLogFileSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.LOG_FILE_SIZE));
+  public int getLogFileSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.LOG_FILE_SIZE),
+        DatabricksJdbcUrlParams.LOG_FILE_SIZE.getParamName());
   }
 
   @Override
-  public int getLogFileCount() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.LOG_FILE_COUNT));
+  public int getLogFileCount() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.LOG_FILE_COUNT),
+        DatabricksJdbcUrlParams.LOG_FILE_COUNT.getParamName());
   }
 
   @Override
@@ -414,25 +444,57 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
     if (computeResource instanceof AllPurposeCluster) {
       return DatabricksClientType.THRIFT;
     }
-    String useThriftClient = getParameter(DatabricksJdbcUrlParams.USE_THRIFT_CLIENT);
-    if (useThriftClient != null && useThriftClient.equals("1")) {
+    // First we will check if user as explicitly provided a client type, and we will honour that
+    String useThriftClient = getParameterIgnoreDefault(DatabricksJdbcUrlParams.USE_THRIFT_CLIENT);
+    if (useThriftClient != null) {
+      if (useThriftClient.equals("1")) {
+        return DatabricksClientType.THRIFT;
+      } else if (useThriftClient.equals("0")) {
+        return DatabricksClientType.SEA;
+      }
+    }
+    // Now, user has not provided a value, we will decide based on our checks
+    // Check if circuit breaker is open due to recent 429 rate limit failures
+    if (SeaCircuitBreakerManager.isCircuitOpen()) {
+      long remainingMs = SeaCircuitBreakerManager.getTimeRemainingMs();
+      LOGGER.info(
+          "SEA circuit breaker is OPEN due to recent 429 rate limit failures. "
+              + "Using THRIFT client. Circuit will close in {} ({}ms)",
+          SeaCircuitBreakerManager.getTimeRemainingFormatted(),
+          remainingMs);
       return DatabricksClientType.THRIFT;
     }
-    return DatabricksClientType.SEA;
+    // Check if Arrow is disabled - Thrift is required for inline mode
+    if (!Objects.equals(getParameter(DatabricksJdbcUrlParams.ENABLE_ARROW), "1")) {
+      return DatabricksClientType.THRIFT;
+    }
+    // Check if CloudFetch is disabled - Thrift is required for inline mode
+    if (!Objects.equals(getParameter(DatabricksJdbcUrlParams.ENABLE_CLOUD_FETCH), "1")) {
+      return DatabricksClientType.THRIFT;
+    }
+    // Check feature flag to determine if SEA client should be enabled
+    if (DatabricksDriverFeatureFlagsContextFactory.getInstance(this)
+        .isFeatureEnabled(SQL_EXEC_FLAG_NAME)) {
+      return DatabricksClientType.SEA;
+    }
+    // Default to THRIFT if feature flag is not enabled or cannot be determined
+    return DatabricksClientType.THRIFT;
   }
 
   @Override
   public DatabricksClientType getClientType() {
-    return clientType;
+    return clientTypeSupplier.get();
   }
 
   public void setClientType(DatabricksClientType clientType) {
-    this.clientType = clientType;
+    this.clientTypeSupplier = () -> clientType;
   }
 
   @Override
-  public int getCloudFetchThreadPoolSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE));
+  public int getCloudFetchThreadPoolSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE),
+        DatabricksJdbcUrlParams.CLOUD_FETCH_THREAD_POOL_SIZE.getParamName());
   }
 
   @Override
@@ -452,12 +514,20 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public Map<String, String> getSessionConfigs() {
-    return this.parameters.entrySet().stream()
-        .filter(
-            e ->
-                ALLOWED_SESSION_CONF_TO_DEFAULT_VALUES_MAP.keySet().stream()
-                    .anyMatch(allowedConf -> allowedConf.toLowerCase().equals(e.getKey())))
-        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    Map<String, String> sessionConfigs =
+        this.parameters.entrySet().stream()
+            .filter(
+                e ->
+                    ALLOWED_SESSION_CONF_TO_DEFAULT_VALUES_MAP.keySet().stream()
+                        .anyMatch(allowedConf -> allowedConf.toLowerCase().equals(e.getKey())))
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+
+    // Add metric view metadata configuration if enabled
+    if (getEnableMetricViewMetadata()) {
+      sessionConfigs.put("spark.sql.thriftserver.metadata.metricview.enabled", "true");
+    }
+
+    return sessionConfigs;
   }
 
   @Override
@@ -609,6 +679,17 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   @Override
   public int getRateLimitRetryTimeout() {
     return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.RATE_LIMIT_RETRY_TIMEOUT));
+  }
+
+  @Override
+  public Set<Integer> getApiRetriableHttpCodes() {
+    String codes = getParameter(DatabricksJdbcUrlParams.API_RETRIABLE_HTTP_CODES);
+    return parseIntegerSet(codes);
+  }
+
+  @Override
+  public int getApiRetryTimeout() {
+    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.API_RETRY_TIMEOUT));
   }
 
   @Override
@@ -780,8 +861,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
-  public int getMaxBatchSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.MAX_BATCH_SIZE));
+  public int getMaxBatchSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.MAX_BATCH_SIZE),
+        DatabricksJdbcUrlParams.MAX_BATCH_SIZE.getParamName());
   }
 
   @Override
@@ -791,7 +874,21 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public int getTelemetryBatchSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE));
+    try {
+      return ValidationUtil.validateAndParsePositiveInteger(
+          getParameter(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE),
+          DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE.getParamName());
+    } catch (DatabricksValidationException e) {
+      // We don't want to throw any errors related to telemetry.
+      return Integer.parseInt(DatabricksJdbcUrlParams.TELEMETRY_BATCH_SIZE.getDefaultValue());
+    }
+  }
+
+  @Override
+  public int getBatchInsertSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.BATCH_INSERT_SIZE),
+        DatabricksJdbcUrlParams.BATCH_INSERT_SIZE.getParamName());
   }
 
   @Override
@@ -858,13 +955,22 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   }
 
   @Override
+  public boolean isGeoSpatialSupportEnabled() {
+    // Geospatial support requires complex datatype support to be enabled
+    return isComplexDatatypeSupportEnabled()
+        && getParameter(DatabricksJdbcUrlParams.ENABLE_GEOSPATIAL_SUPPORT).equals("1");
+  }
+
+  @Override
   public boolean isRequestTracingEnabled() {
     return getParameter(DatabricksJdbcUrlParams.ENABLE_REQUEST_TRACING).equals("1");
   }
 
   @Override
-  public int getHttpConnectionPoolSize() {
-    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE));
+  public int getHttpConnectionPoolSize() throws DatabricksValidationException {
+    return ValidationUtil.validateAndParsePositiveInteger(
+        getParameter(DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE),
+        DatabricksJdbcUrlParams.HTTP_CONNECTION_POOL_SIZE.getParamName());
   }
 
   @Override
@@ -907,13 +1013,14 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
 
   @Override
   public int getRowsFetchedPerBlock() {
-    int maxRows = DEFAULT_ROW_LIMIT_PER_BLOCK;
     try {
-      maxRows = Integer.parseInt(getParameter(DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK));
-    } catch (NumberFormatException e) {
+      return ValidationUtil.validateAndParsePositiveInteger(
+          getParameter(DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK),
+          DatabricksJdbcUrlParams.ROWS_FETCHED_PER_BLOCK.getParamName());
+    } catch (DatabricksValidationException exception) {
       LOGGER.warn("Invalid value for RowsFetchedPerBlock, using default value");
     }
-    return maxRows;
+    return DEFAULT_ROW_LIMIT_PER_BLOCK;
   }
 
   /** {@inheritDoc} */
@@ -979,6 +1086,11 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
     return getParameter(DatabricksJdbcUrlParams.ENABLE_SHOW_COMMAND_FOR_GET_FUNCTIONS).equals("1");
   }
 
+  @Override
+  public boolean getEnableMetricViewMetadata() {
+    return getParameter(DatabricksJdbcUrlParams.ENABLE_METRIC_VIEW_METADATA).equals("1");
+  }
+
   private static boolean nullOrEmptyString(String s) {
     return s == null || s.isEmpty();
   }
@@ -1015,6 +1127,10 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
     return this.parameters.getOrDefault(key.getParamName().toLowerCase(), key.getDefaultValue());
   }
 
+  private String getParameterIgnoreDefault(DatabricksJdbcUrlParams key) {
+    return this.parameters.getOrDefault(key.getParamName().toLowerCase(), null);
+  }
+
   private String getParameter(DatabricksJdbcUrlParams key, String defaultValue) {
     return this.parameters.getOrDefault(key.getParamName().toLowerCase(), defaultValue);
   }
@@ -1049,5 +1165,41 @@ public class DatabricksConnectionContext implements IDatabricksConnectionContext
   @Override
   public boolean getIgnoreTransactions() {
     return getParameter(DatabricksJdbcUrlParams.IGNORE_TRANSACTIONS, "0").equals("1");
+  }
+
+  @Override
+  public boolean getFetchAutoCommitFromServer() {
+    return getParameter(DatabricksJdbcUrlParams.FETCH_AUTOCOMMIT_FROM_SERVER).equals("1");
+  }
+
+  @Override
+  public TelemetryLogLevel getTelemetryLogLevel() {
+    return TelemetryLogLevel.parse(
+        getParameter(DatabricksJdbcUrlParams.TELEMETRY_LOG_LEVEL), TelemetryLogLevel.DEBUG);
+  }
+
+  @Override
+  public boolean isSeaSyncMetadataEnabled() {
+    return getParameter(DatabricksJdbcUrlParams.ENABLE_SEA_SYNC_METADATA).equals("1");
+  }
+
+  @Override
+  public boolean getDisableOauthRefreshToken() {
+    return getParameter(DatabricksJdbcUrlParams.DISABLE_OAUTH_REFRESH_TOKEN, "1").equals("1");
+  }
+
+  @Override
+  public boolean isTokenFederationEnabled() {
+    return getParameter(DatabricksJdbcUrlParams.ENABLE_TOKEN_FEDERATION, "1").equals("1");
+  }
+
+  @Override
+  public boolean isStreamingChunkProviderEnabled() {
+    return getParameter(DatabricksJdbcUrlParams.ENABLE_STREAMING_CHUNK_PROVIDER).equals("1");
+  }
+
+  @Override
+  public int getLinkPrefetchWindow() {
+    return Integer.parseInt(getParameter(DatabricksJdbcUrlParams.LINK_PREFETCH_WINDOW));
   }
 }

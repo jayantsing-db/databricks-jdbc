@@ -1,6 +1,7 @@
 package com.databricks.jdbc.dbclient.impl.sqlexec;
 
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.JSON_HTTP_HEADERS;
+import static com.databricks.jdbc.common.DatabricksJdbcConstants.QUERY_EXECUTION_TIMEOUT_SQLSTATE;
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.TEMPORARY_REDIRECT_STATUS_CODE;
 import static com.databricks.jdbc.common.EnvironmentVariables.DEFAULT_RESULT_ROW_LIMIT;
 import static com.databricks.jdbc.common.util.DatabricksTypeUtil.DECIMAL;
@@ -29,6 +30,7 @@ import com.databricks.jdbc.model.client.sqlexec.ExecuteStatementRequest;
 import com.databricks.jdbc.model.client.sqlexec.ExecuteStatementResponse;
 import com.databricks.jdbc.model.client.sqlexec.GetStatementResponse;
 import com.databricks.jdbc.model.client.thrift.generated.TFetchResultsResp;
+import com.databricks.jdbc.model.core.ChunkLinkFetchResult;
 import com.databricks.jdbc.model.core.Disposition;
 import com.databricks.jdbc.model.core.ExternalLink;
 import com.databricks.jdbc.model.core.ResultData;
@@ -49,6 +51,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLHandshakeException;
+import org.apache.http.HttpStatus;
 
 /** Implementation of IDatabricksClient interface using Databricks Java SDK. */
 public class DatabricksSdkClient implements IDatabricksClient {
@@ -124,6 +127,17 @@ public class DatabricksSdkClient implements IDatabricksClient {
       if (e.getStatusCode() == TEMPORARY_REDIRECT_STATUS_CODE) {
         throw new DatabricksTemporaryRedirectException(TEMPORARY_REDIRECT_EXCEPTION);
       }
+      if (e.getStatusCode() == HttpStatus.SC_TOO_MANY_REQUESTS) {
+        String errorMessage =
+            String.format(
+                "createSession failed with HTTP %d (rate limit exceeded) after retries. "
+                    + "Warehouse id: %s, Error: %s",
+                HttpStatus.SC_TOO_MANY_REQUESTS,
+                ((Warehouse) warehouse).getWarehouseId(),
+                e.getMessage());
+        LOGGER.warn(errorMessage, e);
+        throw new DatabricksRateLimitException(errorMessage, e, HttpStatus.SC_TOO_MANY_REQUESTS);
+      }
       String errorReason = buildErrorMessage(e);
       throw new DatabricksSQLException(errorReason, e, DatabricksDriverErrorCode.CONNECTION_ERROR);
     } catch (IOException e) {
@@ -192,7 +206,7 @@ public class DatabricksSdkClient implements IDatabricksClient {
     ExecuteStatementResponse response;
     try {
       Request req = new Request(Request.POST, STATEMENT_PATH, apiClient.serialize(request));
-      req.withHeaders(getHeaders("executeStatement"));
+      req.withHeaders(getHeaders("executeStatement", statementType, false));
       response = apiClient.execute(req, ExecuteStatementResponse.class);
     } catch (IOException e) {
       String errorMessage = "Error while processing the execute statement request";
@@ -225,7 +239,11 @@ public class DatabricksSdkClient implements IDatabricksClient {
 
     // Create timeout handler
     TimeoutHandler timeoutHandler =
-        TimeoutHandler.forStatement(timeoutInSeconds, typedStatementId, this);
+        TimeoutHandler.forStatement(
+            timeoutInSeconds,
+            typedStatementId,
+            this,
+            DatabricksDriverErrorCode.STATEMENT_EXECUTION_TIMEOUT);
 
     StatementState responseState = response.getStatus().getState();
     while (responseState == StatementState.PENDING || responseState == StatementState.RUNNING) {
@@ -240,7 +258,8 @@ public class DatabricksSdkClient implements IDatabricksClient {
               String.format(
                   "Thread interrupted due to statement timeout. StatementID %s", statementId);
           LOGGER.error(timeoutErrorMessage);
-          throw new DatabricksTimeoutException(timeoutErrorMessage);
+          throw new DatabricksTimeoutException(
+              timeoutErrorMessage, null, DatabricksDriverErrorCode.STATEMENT_EXECUTION_TIMEOUT);
         }
       }
       String getStatusPath = String.format(STATEMENT_PATH_WITH_ID, statementId);
@@ -269,6 +288,12 @@ public class DatabricksSdkClient implements IDatabricksClient {
     if (responseState != StatementState.SUCCEEDED && responseState != StatementState.CLOSED) {
       handleFailedExecution(response, statementId, sql);
     }
+
+    if (responseState == StatementState.CLOSED && parentStatement != null) {
+      LOGGER.debug("Statement {} returned CLOSED status, marking statement as closed", statementId);
+      ((DatabricksStatement) parentStatement.getStatement()).markAsClosed();
+    }
+
     return new DatabricksResultSet(
         response.getStatus(),
         typedStatementId,
@@ -294,9 +319,10 @@ public class DatabricksSdkClient implements IDatabricksClient {
         session,
         parentStatement);
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
+    StatementType statementType = StatementType.SQL;
     ExecuteStatementRequest request =
         getRequest(
-            StatementType.SQL,
+            statementType,
             sql,
             ((Warehouse) computeResource).getWarehouseId(),
             session,
@@ -306,7 +332,7 @@ public class DatabricksSdkClient implements IDatabricksClient {
     ExecuteStatementResponse response;
     try {
       Request req = new Request(Request.POST, STATEMENT_PATH, apiClient.serialize(request));
-      req.withHeaders(getHeaders("executeStatement"));
+      req.withHeaders(getHeaders("executeStatement", statementType, true));
       response = apiClient.execute(req, ExecuteStatementResponse.class);
     } catch (IOException e) {
       String errorMessage = "Error while processing the execute statement async request";
@@ -330,7 +356,7 @@ public class DatabricksSdkClient implements IDatabricksClient {
         typedStatementId,
         response.getResult(),
         response.getManifest(),
-        StatementType.SQL,
+        statementType,
         session,
         parentStatement);
   }
@@ -403,12 +429,65 @@ public class DatabricksSdkClient implements IDatabricksClient {
   }
 
   @Override
-  public Collection<ExternalLink> getResultChunks(StatementId typedStatementId, long chunkIndex)
+  public ChunkLinkFetchResult getResultChunks(
+      StatementId typedStatementId, long chunkIndex, long chunkStartRowOffset)
       throws DatabricksSQLException {
     DatabricksThreadContextHolder.setStatementId(typedStatementId);
     String statementId = typedStatementId.toSQLExecStatementId();
     LOGGER.debug(
-        "public Optional<ExternalLink> getResultChunk(String statementId = {}, long chunkIndex = {})",
+        "getResultChunks(statementId={}, chunkIndex={}) using SEA client", statementId, chunkIndex);
+    GetStatementResultChunkNRequest request =
+        new GetStatementResultChunkNRequest().setStatementId(statementId).setChunkIndex(chunkIndex);
+    String path = String.format(RESULT_CHUNK_PATH, statementId, chunkIndex);
+    try {
+      Request req = new Request(Request.GET, path, apiClient.serialize(request));
+      req.withHeaders(getHeaders("getStatementResultN"));
+      ResultData resultData = apiClient.execute(req, ResultData.class);
+      return buildChunkLinkFetchResult(resultData.getExternalLinks());
+    } catch (IOException e) {
+      String errorMessage = "Error while processing the get result chunk request";
+      LOGGER.error(errorMessage, e);
+      throw new DatabricksSQLException(errorMessage, e, DatabricksDriverErrorCode.SDK_CLIENT_ERROR);
+    }
+  }
+
+  /**
+   * Builds a ChunkLinkFetchResult from SEA external links.
+   *
+   * @param links The external links from the SEA response
+   * @return ChunkLinkFetchResult with links and continuation info
+   */
+  private ChunkLinkFetchResult buildChunkLinkFetchResult(Collection<ExternalLink> links) {
+    if (links == null || links.isEmpty()) {
+      return ChunkLinkFetchResult.endOfStream();
+    }
+
+    List<ExternalLink> linkList =
+        links instanceof List ? (List<ExternalLink>) links : new ArrayList<>(links);
+
+    // Derive continuation info from last link
+    ExternalLink lastLink = linkList.get(linkList.size() - 1);
+    boolean hasMore = lastLink.getNextChunkIndex() != null;
+    long nextFetchIndex = hasMore ? lastLink.getNextChunkIndex() : -1;
+    long nextRowOffset = lastLink.getRowOffset() + lastLink.getRowCount();
+
+    LOGGER.debug(
+        "Built ChunkLinkFetchResult with {} links, hasMore={}, nextFetchIndex={}, nextRowOffset={}",
+        linkList.size(),
+        hasMore,
+        nextFetchIndex,
+        nextRowOffset);
+
+    return ChunkLinkFetchResult.of(linkList, hasMore, nextFetchIndex, nextRowOffset);
+  }
+
+  @Override
+  public ResultData getResultChunksData(StatementId typedStatementId, long chunkIndex)
+      throws DatabricksSQLException {
+    DatabricksThreadContextHolder.setStatementId(typedStatementId);
+    String statementId = typedStatementId.toSQLExecStatementId();
+    LOGGER.debug(
+        "public ResultData getResultChunksData(String statementId = {}, long chunkIndex = {})",
         statementId,
         chunkIndex);
     GetStatementResultChunkNRequest request =
@@ -417,8 +496,7 @@ public class DatabricksSdkClient implements IDatabricksClient {
     try {
       Request req = new Request(Request.GET, path, apiClient.serialize(request));
       req.withHeaders(getHeaders("getStatementResultN"));
-      ResultData resultData = apiClient.execute(req, ResultData.class);
-      return resultData.getExternalLinks();
+      return apiClient.execute(req, ResultData.class);
     } catch (IOException e) {
       String errorMessage = "Error while processing the get result chunk request";
       LOGGER.error(errorMessage, e);
@@ -452,6 +530,11 @@ public class DatabricksSdkClient implements IDatabricksClient {
   }
 
   private Map<String, String> getHeaders(String method) {
+    return getHeaders(method, null, false);
+  }
+
+  private Map<String, String> getHeaders(
+      String method, StatementType statementType, boolean isAsync) {
     Map<String, String> headers = new HashMap<>(JSON_HTTP_HEADERS);
     if (connectionContext.isRequestTracingEnabled()) {
       String traceHeader = TracingUtil.getTraceHeader();
@@ -459,9 +542,44 @@ public class DatabricksSdkClient implements IDatabricksClient {
       headers.put(TracingUtil.TRACE_HEADER, traceHeader);
     }
 
+    // Add SEA sync metadata header when appropriate
+    if (shouldAddSeaSyncMetadataHeader(statementType, isAsync)) {
+      headers.put("x-databricks-sea-can-run-fully-sync", "true");
+      LOGGER.debug(
+          "Adding x-databricks-sea-can-run-fully-sync header for synchronous metadata request");
+    }
+
     // Overriding with URL defined headers
     headers.putAll(this.connectionContext.getCustomHeaders());
     return headers;
+  }
+
+  /**
+   * Determines whether the x-databricks-sea-can-run-fully-sync header should be added to the
+   * request.
+   *
+   * <p>This header is only added when all of the following conditions are met:
+   *
+   * <ul>
+   *   <li>The EnableSeaSyncMetadata URL parameter is enabled (default: true)
+   *   <li>The statement type is METADATA
+   *   <li>The execution mode is synchronous (not async)
+   * </ul>
+   *
+   * <p>The header signals to the server that the metadata operation can be executed fully
+   * synchronously in SEA mode, enabling optimized execution paths.
+   *
+   * <p>Note: This client is only used for SEA mode, so no client type check is needed.
+   *
+   * @param statementType the type of statement being executed (e.g., METADATA, QUERY, SQL)
+   * @param isAsync true if the statement is being executed asynchronously, false for synchronous
+   *     execution
+   * @return true if the header should be added, false otherwise
+   */
+  private boolean shouldAddSeaSyncMetadataHeader(StatementType statementType, boolean isAsync) {
+    return connectionContext.isSeaSyncMetadataEnabled()
+        && statementType == StatementType.METADATA
+        && !isAsync;
   }
 
   private ExecuteStatementRequest getRequest(
@@ -540,10 +658,14 @@ public class DatabricksSdkClient implements IDatabricksClient {
               " Error Message: %s, Error code: %s", error.getMessage(), error.getErrorCode());
     }
     LOGGER.debug(errorMessage);
+
+    String sqlState = response.getStatus().getSqlState();
+    if (QUERY_EXECUTION_TIMEOUT_SQLSTATE.equals(sqlState)) {
+      throw new DatabricksTimeoutException(
+          errorMessage, null, DatabricksDriverErrorCode.OPERATION_TIMEOUT_ERROR);
+    }
     throw new DatabricksSQLException(
-        errorMessage,
-        response.getStatus().getSqlState(),
-        DatabricksDriverErrorCode.EXECUTE_STATEMENT_FAILED);
+        errorMessage, sqlState, DatabricksDriverErrorCode.EXECUTE_STATEMENT_FAILED);
   }
 
   private ExecuteStatementResponse wrapGetStatementResponse(

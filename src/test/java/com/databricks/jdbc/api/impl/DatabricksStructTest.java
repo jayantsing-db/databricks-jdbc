@@ -655,7 +655,39 @@ public class DatabricksStructTest {
     metadataParserMock.verify(() -> MetadataParser.parseStructMetadata(metadata), times(1));
   }
 
-  /**
+  /** Test the constructor with null values in attributes with complex field types. */
+  @Test
+  public void constructor_ShouldHandleNullValuesInComplexAttributes() throws SQLException {
+    String metadata = "STRUCT<id:INT,map:STRUCT<value:STRING>,array:ARRAY<STRING>>";
+    Map<String, Object> attributes = new HashMap<>();
+    attributes.put("id", null);
+    attributes.put("map", null);
+    attributes.put("array", null);
+
+    // Mock MetadataParser.parseStructMetadata to return a map of field types
+    Map<String, String> typeMap = new LinkedHashMap<>();
+    typeMap.put("id", "INT");
+    typeMap.put("map", "STRUCT<value:STRING>");
+    typeMap.put("array", "ARRAY<STRING>");
+    mockParseStructMetadata(metadata, typeMap);
+
+    DatabricksStruct databricksStruct = new DatabricksStruct(attributes, metadata);
+
+    // Retrieve attributes
+    Object[] convertedAttributes = databricksStruct.getAttributes();
+
+    // Assertions
+    assertNotNull(convertedAttributes, "Converted attributes should not be null");
+    assertEquals(3, convertedAttributes.length, "Struct should have three attributes");
+    assertNull(convertedAttributes[0], "Attribute 'id' should be null");
+    assertNull(convertedAttributes[1], "Attribute 'map' should be null");
+    assertNull(convertedAttributes[2], "Attribute 'array' should be null");
+
+    // Verify that parseStructMetadata was called once with the correct metadata
+    metadataParserMock.verify(() -> MetadataParser.parseStructMetadata(metadata), times(1));
+  }
+
+  /*
    * Test the constructor with conversion failure in nested Struct. Expects
    * DatabricksDriverException.
    */
@@ -892,5 +924,88 @@ public class DatabricksStructTest {
         "{\"test\":\"data\"}",
         preservedNode.toString(),
         "JsonNode content should be preserved exactly");
+  }
+
+  @Test
+  public void testToStringWithTimestamp() throws SQLException {
+    // Test that timestamps in structs are properly quoted
+    java.sql.Timestamp timestamp = java.sql.Timestamp.valueOf("2024-01-01 12:30:45.123");
+    String metadata = "STRUCT<id:INT,created_at:TIMESTAMP>";
+
+    Map<String, Object> fieldTypesMap = new LinkedHashMap<>();
+    fieldTypesMap.put("id", "INT");
+    fieldTypesMap.put("created_at", "TIMESTAMP");
+
+    metadataParserMock
+        .when(() -> MetadataParser.parseStructMetadata(metadata))
+        .thenReturn(fieldTypesMap);
+
+    Map<String, Object> inputMap = new LinkedHashMap<>();
+    inputMap.put("id", 123);
+    inputMap.put("created_at", timestamp);
+
+    DatabricksStruct struct = new DatabricksStruct(inputMap, metadata);
+    String actual = struct.toString();
+
+    String expected = "{\"id\":123,\"created_at\":\"2024-01-01 12:30:45.123\"}";
+    assertEquals(expected, actual, "DatabricksStruct.toString() should quote timestamp fields");
+  }
+
+  @Test
+  public void testToStringWithDate() throws SQLException {
+    // Test that dates in structs are properly quoted
+    java.sql.Date date = java.sql.Date.valueOf("2024-01-01");
+    String metadata = "STRUCT<id:INT,event_date:DATE>";
+
+    Map<String, Object> fieldTypesMap = new LinkedHashMap<>();
+    fieldTypesMap.put("id", "INT");
+    fieldTypesMap.put("event_date", "DATE");
+
+    metadataParserMock
+        .when(() -> MetadataParser.parseStructMetadata(metadata))
+        .thenReturn(fieldTypesMap);
+
+    Map<String, Object> inputMap = new LinkedHashMap<>();
+    inputMap.put("id", 456);
+    inputMap.put("event_date", date);
+
+    DatabricksStruct struct = new DatabricksStruct(inputMap, metadata);
+    String actual = struct.toString();
+
+    String expected = "{\"id\":456,\"event_date\":\"2024-01-01\"}";
+    assertEquals(expected, actual, "DatabricksStruct.toString() should quote date fields");
+  }
+
+  @Test
+  public void testToStringProducesValidJsonWithSpecialCharacters() throws SQLException {
+    // Test that toString() produces VALID JSON when strings contain special characters
+    String metadata = "STRUCT<id:INT,message:STRING,path:STRING>";
+
+    Map<String, Object> fieldTypesMap = new LinkedHashMap<>();
+    fieldTypesMap.put("id", "INT");
+    fieldTypesMap.put("message", "STRING");
+    fieldTypesMap.put("path", "STRING");
+
+    metadataParserMock
+        .when(() -> MetadataParser.parseStructMetadata(metadata))
+        .thenReturn(fieldTypesMap);
+
+    Map<String, Object> inputMap = new LinkedHashMap<>();
+    inputMap.put("id", 1);
+    inputMap.put("message", "She said \"hello\"");
+    inputMap.put("path", "C:\\Users\\file.txt");
+
+    DatabricksStruct struct = new DatabricksStruct(inputMap, metadata);
+    String actual = struct.toString();
+
+    System.out.println("Generated JSON: " + actual);
+
+    try {
+      new ObjectMapper().readTree(actual);
+      // Success! The JSON is valid
+      System.out.println("JSON parsing succeeded - output is valid JSON");
+    } catch (Exception e) {
+      fail("JSON parsing failed. JSON was invalid: " + actual + "\nError: " + e.getMessage());
+    }
   }
 }

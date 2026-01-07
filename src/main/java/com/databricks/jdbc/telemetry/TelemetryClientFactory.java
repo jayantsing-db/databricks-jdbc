@@ -1,5 +1,6 @@
 package com.databricks.jdbc.telemetry;
 
+import static com.databricks.jdbc.telemetry.TelemetryHelper.DEFAULT_HOST;
 import static com.databricks.jdbc.telemetry.TelemetryHelper.isTelemetryAllowedForConnection;
 
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
@@ -8,7 +9,8 @@ import com.databricks.jdbc.log.JdbcLogger;
 import com.databricks.jdbc.log.JdbcLoggerFactory;
 import com.databricks.sdk.core.DatabricksConfig;
 import com.google.common.annotations.VisibleForTesting;
-import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -18,15 +20,14 @@ public class TelemetryClientFactory {
 
   private static final JdbcLogger LOGGER =
       JdbcLoggerFactory.getLogger(TelemetryClientFactory.class);
-  private static final String DEFAULT_HOST = "unknown-host";
 
   private static final TelemetryClientFactory INSTANCE = new TelemetryClientFactory();
 
   @VisibleForTesting
-  final LinkedHashMap<String, TelemetryClient> telemetryClients = new LinkedHashMap<>();
+  final Map<String, TelemetryClientHolder> telemetryClientHolders = new ConcurrentHashMap<>();
 
   @VisibleForTesting
-  final LinkedHashMap<String, TelemetryClient> noauthTelemetryClients = new LinkedHashMap<>();
+  final Map<String, TelemetryClientHolder> noauthTelemetryClientHolders = new ConcurrentHashMap<>();
 
   private final ExecutorService telemetryExecutorService;
 
@@ -59,24 +60,71 @@ public class TelemetryClientFactory {
     DatabricksConfig databricksConfig =
         TelemetryHelper.getDatabricksConfigSafely(connectionContext);
     if (databricksConfig != null) {
-      return telemetryClients.computeIfAbsent(
-          connectionContext.getConnectionUuid(),
-          k ->
-              new TelemetryClient(
-                  connectionContext, getTelemetryExecutorService(), databricksConfig));
+      String key = TelemetryHelper.keyOf(connectionContext);
+      TelemetryClientHolder holder =
+          telemetryClientHolders.compute(
+              key,
+              (k, existing) -> {
+                if (existing == null) {
+                  try {
+                    return new TelemetryClientHolder(
+                        new TelemetryClient(
+                            connectionContext, getTelemetryExecutorService(), databricksConfig),
+                        1);
+                  } catch (Exception e) {
+                    // Validation or other errors during client creation - fail silently
+                    return null;
+                  }
+                }
+                existing.refCount.incrementAndGet();
+                return existing;
+              });
+      return holder != null ? holder.client : NoopTelemetryClient.getInstance();
     }
     // Use no-auth telemetry client if connection creation failed.
-    return noauthTelemetryClients.computeIfAbsent(
-        connectionContext.getConnectionUuid(),
-        k -> new TelemetryClient(connectionContext, getTelemetryExecutorService()));
+    String key = TelemetryHelper.keyOf(connectionContext);
+    TelemetryClientHolder holder =
+        noauthTelemetryClientHolders.compute(
+            key,
+            (k, existing) -> {
+              if (existing == null) {
+                try {
+                  return new TelemetryClientHolder(
+                      new TelemetryClient(connectionContext, getTelemetryExecutorService()), 1);
+                } catch (Exception e) {
+                  // Validation or other errors during client creation - fail silently
+                  LOGGER.trace("Skipping telemetry, client creation failed {}", e);
+                  return null;
+                }
+              }
+              existing.refCount.incrementAndGet();
+              return existing;
+            });
+    return holder != null ? holder.client : NoopTelemetryClient.getInstance();
   }
 
   public void closeTelemetryClient(IDatabricksConnectionContext connectionContext) {
-    closeTelemetryClient(
-        telemetryClients.remove(connectionContext.getConnectionUuid()), "telemetry client");
-    closeTelemetryClient(
-        noauthTelemetryClients.remove(connectionContext.getConnectionUuid()),
-        "unauthenticated telemetry client");
+    String key = TelemetryHelper.keyOf(connectionContext);
+    telemetryClientHolders.computeIfPresent(
+        key,
+        (k, holder) -> {
+          if (holder.refCount.get() <= 1) {
+            closeTelemetryClient(holder.client, "telemetry client");
+            return null;
+          }
+          holder.refCount.decrementAndGet();
+          return holder;
+        });
+    noauthTelemetryClientHolders.computeIfPresent(
+        key,
+        (k, holder) -> {
+          if (holder.refCount.get() <= 1) {
+            closeTelemetryClient(holder.client, "unauthenticated telemetry client");
+            return null;
+          }
+          holder.refCount.decrementAndGet();
+          return holder;
+        });
   }
 
   public ExecutorService getTelemetryExecutorService() {
@@ -109,12 +157,12 @@ public class TelemetryClientFactory {
   @VisibleForTesting
   public void reset() {
     // Close all existing clients
-    telemetryClients.values().forEach(TelemetryClient::close);
-    noauthTelemetryClients.values().forEach(TelemetryClient::close);
+    telemetryClientHolders.values().forEach(holder -> holder.client.close());
+    noauthTelemetryClientHolders.values().forEach(holder -> holder.client.close());
 
     // Clear the maps
-    telemetryClients.clear();
-    noauthTelemetryClients.clear();
+    telemetryClientHolders.clear();
+    noauthTelemetryClientHolders.clear();
   }
 
   private void closeTelemetryClient(ITelemetryClient client, String clientType) {
@@ -125,5 +173,20 @@ public class TelemetryClientFactory {
         LOGGER.debug("Caught error while closing {}. Error: {}", clientType, e);
       }
     }
+  }
+
+  private static final class TelemetryClientHolder {
+    final TelemetryClient client;
+    final AtomicInteger refCount;
+
+    TelemetryClientHolder(TelemetryClient client, int initialCount) {
+      this.client = client;
+      this.refCount = new AtomicInteger(initialCount);
+    }
+  }
+
+  private static String keyOf(IDatabricksConnectionContext context) {
+    String host = context.getHostForOAuth();
+    return host != null ? host : DEFAULT_HOST;
   }
 }

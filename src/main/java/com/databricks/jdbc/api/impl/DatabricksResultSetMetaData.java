@@ -5,10 +5,7 @@ import static com.databricks.jdbc.common.DatabricksJdbcConstants.VOLUME_OPERATIO
 import static com.databricks.jdbc.common.MetadataResultConstants.LARGE_DISPLAY_COLUMNS;
 import static com.databricks.jdbc.common.MetadataResultConstants.REMARKS_COLUMN;
 import static com.databricks.jdbc.common.util.DatabricksThriftUtil.*;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.TIMESTAMP;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.TIMESTAMP_NTZ;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.VARIANT;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.getBasePrecisionAndScale;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.*;
 
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
 import com.databricks.jdbc.common.AccessType;
@@ -98,6 +95,18 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
             columnTypeName = ColumnInfoTypeName.TIMESTAMP;
             columnInfo.setTypeText(TIMESTAMP);
           }
+
+          // Check if we need to convert geospatial types to string when geospatial support is
+          // disabled
+          String typeText = columnInfo.getTypeText();
+          if (!ctx.isGeoSpatialSupportEnabled() && isGeospatialType(columnTypeName)) {
+            LOGGER.debug(
+                "Geospatial support is disabled, converting {} to STRING in metadata",
+                columnTypeName);
+            columnTypeName = ColumnInfoTypeName.STRING;
+            typeText = "STRING";
+          }
+
           int columnType = DatabricksTypeUtil.getColumnType(columnTypeName);
           int[] precisionAndScale = getPrecisionAndScale(columnInfo, columnType);
           int precision = precisionAndScale[0];
@@ -109,8 +118,7 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
               .columnType(columnType)
               .columnTypeText(
                   metadataResultSetBuilder.stripTypeName(
-                      columnInfo
-                          .getTypeText())) // store base type eg. DECIMAL instead of DECIMAL(7,2)
+                      typeText)) // store base type eg. DECIMAL instead of DECIMAL(7,2)
               .typePrecision(precision)
               .typeScale(scale)
               .displaySize(DatabricksTypeUtil.getDisplaySize(columnTypeName, precision, scale))
@@ -178,18 +186,27 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
             columnIndex < resultManifest.getSchema().getColumnsSize();
             columnIndex++) {
           TColumnDesc columnDesc = resultManifest.getSchema().getColumns().get(columnIndex);
+
           ColumnInfo columnInfo = getColumnInfoFromTColumnDesc(columnDesc);
           int[] precisionAndScale = getPrecisionAndScale(columnInfo);
           int precision = precisionAndScale[0];
           int scale = precisionAndScale[1];
 
           ImmutableDatabricksColumn.Builder columnBuilder = getColumnBuilder();
+          // Use arrowMetadata for type text if available, as it contains full type information
+          // like "ARRAY<INT>" whereas TTypeDesc only has primitive "ARRAY_TYPE"
+          String columnTypeText =
+              (arrowMetadata != null
+                      && columnIndex < arrowMetadata.size()
+                      && arrowMetadata.get(columnIndex) != null)
+                  ? arrowMetadata.get(columnIndex)
+                  : getTypeTextFromTypeDesc(columnDesc.getTypeDesc());
           columnBuilder
               .columnName(columnInfo.getName())
               .columnTypeClassName(
                   DatabricksTypeUtil.getColumnTypeClassName(columnInfo.getTypeName()))
               .columnType(DatabricksTypeUtil.getColumnType(columnInfo.getTypeName()))
-              .columnTypeText(getTypeTextFromTypeDesc(columnDesc.getTypeDesc()))
+              .columnTypeText(columnTypeText)
               // columnInfoTypeName does not have BIGINT, SMALLINT. Extracting from thriftType in
               // typeDesc
               .typePrecision(precision)
@@ -205,6 +222,31 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
                 .columnTypeClassName("java.lang.String")
                 .columnType(Types.OTHER)
                 .columnTypeText(VARIANT);
+          } else if (isGeometryColumn(arrowMetadata, columnIndex)
+              && ctx.isGeoSpatialSupportEnabled()) {
+            // Only set GEOMETRY type if geospatial support is enabled
+            columnBuilder
+                .columnTypeClassName(GEOMETRY_CLASS_NAME)
+                .columnType(Types.OTHER)
+                .columnTypeText(GEOMETRY);
+          } else if (isGeographyColumn(arrowMetadata, columnIndex)
+              && ctx.isGeoSpatialSupportEnabled()) {
+            // Only set GEOGRAPHY type if geospatial support is enabled
+            columnBuilder
+                .columnTypeClassName(GEOGRAPHY_CLASS_NAME)
+                .columnType(Types.OTHER)
+                .columnTypeText(GEOGRAPHY);
+          } else if ((isGeometryColumn(arrowMetadata, columnIndex)
+                  || isGeographyColumn(arrowMetadata, columnIndex))
+              && !ctx.isGeoSpatialSupportEnabled()) {
+            // Convert geospatial types to STRING when support is disabled
+            LOGGER.debug(
+                "Geospatial support is disabled, converting column {} to STRING in Thrift metadata",
+                columnInfo.getName());
+            columnBuilder
+                .columnTypeClassName("java.lang.String")
+                .columnType(Types.VARCHAR)
+                .columnTypeText("STRING");
           }
           columnsBuilder.add(columnBuilder.build());
           columnNameToIndexMap.putIfAbsent(columnInfo.getName(), ++currIndex);
@@ -414,6 +456,8 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
       } else if (columnTypeText.equalsIgnoreCase(VARIANT)) {
         columnTypeName = ColumnInfoTypeName.STRING;
         columnTypeText = VARIANT;
+      } else if (columnTypeText.toUpperCase().startsWith(INTERVAL)) {
+        columnTypeName = ColumnInfoTypeName.INTERVAL;
       } else {
         columnTypeName =
             ColumnInfoTypeName.valueOf(metadataResultSetBuilder.stripBaseTypeName(columnTypeText));
@@ -450,7 +494,6 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
     this.totalRows = -1;
     this.columns = columnsBuilder.build();
     this.columnNameIndex = CaseInsensitiveImmutableMap.copyOf(columnNameToIndexMap);
-    ;
   }
 
   @Override
@@ -640,6 +683,30 @@ public class DatabricksResultSetMetaData implements ResultSetMetaData {
         && arrowMetadata.size() > i
         && arrowMetadata.get(i) != null
         && arrowMetadata.get(i).equalsIgnoreCase(VARIANT);
+  }
+
+  private boolean isGeometryColumn(List<String> arrowMetadata, int index) {
+    return arrowMetadata != null
+        && arrowMetadata.size() > index
+        && arrowMetadata.get(index) != null
+        && arrowMetadata.get(index).contains(GEOMETRY);
+  }
+
+  private boolean isGeographyColumn(List<String> arrowMetadata, int index) {
+    return arrowMetadata != null
+        && arrowMetadata.size() > index
+        && arrowMetadata.get(index) != null
+        && arrowMetadata.get(index).contains(GEOGRAPHY);
+  }
+
+  /**
+   * Checks if the given column type is a geospatial type.
+   *
+   * @param type the column type to check
+   * @return true if the type is GEOMETRY or GEOGRAPHY, false otherwise
+   */
+  private boolean isGeospatialType(ColumnInfoTypeName type) {
+    return type == ColumnInfoTypeName.GEOMETRY || type == ColumnInfoTypeName.GEOGRAPHY;
   }
 
   private ImmutableDatabricksColumn.Builder getColumnBuilder() {

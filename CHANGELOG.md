@@ -1,6 +1,126 @@
 # Version Changelog
+## [v3.0.7] - 2025-12-18
 
-## [v1.0.10-oss] - 2025-09-18
+### Updated
+- Log timestamps now explicitly display timezone.
+- **[Breaking Change]** `PreparedStatement.setTimestamp(int, Timestamp, Calendar)` now properly applies Calendar timezone conversion using LocalDateTime pattern (inline with `getTimestamp`). Previously Calendar parameter was ineffective.
+- `DatabaseMetaData.getColumns()` with null catalog parameter now retrieves columns from all catalogs when using SQL Execution API, aligning the behaviour with thrift.
+- `DatabaseMetaData.getFunctions()` with null catalog parameter now retrieves columns from the current catalog when using SQL Execution API, aligning the behaviour with thrift.
+
+### Fixed
+- Fix timeout exception handling to throw `SQLTimeoutException` instead of `DatabricksSQLException` when queries timeout.
+- Removes dangerous global timezone modification that caused race conditions.
+- Fixed `Statement.getLargeUpdateCount()` to return -1 instead of throwing Exception when there were no more results or result is not an update count.
+- CVE-2025-66566. Updated lz4-java dependency to 1.10.1.
+- Fix `INVALID_IDENTIFIER` error when using catalog/schema/table names for SQL Exec API with hyphens or special characters in metadata operations (`getSchemas()`, `getTables()`, `getColumns()`, etc.) and connection methods (`setCatalog()`, `setSchema()`). Per Databricks identifier rules, special characters are now properly enclosed in backticks.
+- Fix Auth_Scope handling inconsistency in Azure U2M OAuth.
+
+---
+
+## [v3.0.6] - 2025-12-11
+
+### Added
+- Added the EnableTokenFederation url param to enable or disable Token federation feature. By default it is set to 1
+- Added the ApiRetriableHttpCodes, ApiRetryTimeout url params to enable retries for specific HTTP codes irrespective of Retry-After header. By default the HTTP codes list is empty.
+
+### Updated
+- Added validation for positive integer configuration properties (RowsFetchedPerBlock, BatchInsertSize, etc.) to prevent hangs and errors when set to zero or negative values.
+- Updated Circuit breaker to be triggered by 429 errors too.
+- Refactored chunk download to keep a sliding window of chunk links. The window advances as the main thread consumes chunks. These changes can be enabled using the connection property EnableStreamingChunkProvider=1. The changes are expected to make chunk download faster and robust.
+- Added separate circuit breaker to handle 429 from SQL Exec API connection creation calls, and fall back to Thrift.
+
+### Fixed
+- Fix driver crash when using `INTERVAL` types.
+- Fix connection failure in restricted environments when `LogLevel.OFF` is used.
+- Fix U2M by including SDK OAuth HTML callback resources.
+- Fix microsecond precision loss in `PreparedStatement.setTimestamp(int,Timestamp, Calendar)` and address thread-safety issues with global timezone modification.
+- Fix metadata methods (`getColumns`, `getFunctions`, `getPrimaryKeys`, `getImportedKeys`) to return empty ResultSets instead of throwing exceptions when catalog parameter is NULL, for SQL Exec API.
+
+---
+
+## [v3.0.5] - 2025-11-20
+
+### Added
+- Added support for high-performance batched writes with parameter interpolation:
+  - `supportManyParameters=1`: Enables parameter interpolation to bypass 256-parameter limit (default: 0)
+  - `EnableBatchedInserts=1`: Enables multi-row INSERT batching (default: 0)
+  - `BatchInsertSize=<SIZE>`: Maximum rows per batch (default: 1000)
+  - Note: Large batches are chunked for execution. If a chunk fails, previous chunks remain committed (no transaction rollback). Consider using staging tables for critical workflows.
+- Added Feature-flag integration for SQL Exec API rollout
+- Call statements will return result sets in response
+- Add a gating flag for enabling GeoSpatial support: `EnableGeoSpatialSupport`. By default, it will be disabled
+
+### Updated
+- Minimized OAuth requests by reducing calls in feature flags and telemetry.
+- Geospatial `getWKB()` now returns OGC-compliant WKB values.
+
+### Fixed
+- Fix: SQLInterpolator failing to escape temporal fields and special characters.
+- Fixed: Errors in table creation when using BIGINT, SMALLINT, TINYINT, or VOID types.
+- Fixed: PreparedStatement.getMetaData() now correctly reports TINYINT columns as Types.TINYINT (java.lang.Byte) instead of Types.SMALLINT (java.lang.Integer).
+- Fixed: TINYINT to String conversion to return numeric representation (e.g., "65") instead of character representation (e.g., "A").
+- Fixed: Complex types (Structs, arrays, maps) now show detailed type information in metadata calls in Thrift mode
+- Fixed: incorrect chunk download/processing status codes.
+- Shade SLF4J to avoid conflicts with user applications.
+
+---
+
+## [v3.0.4] - 2025-11-12: DEPRECATED, Use v3.0.5 instead
+
+### Added
+- Added support for geospatial data types. (Use v3.0.5+ for OGC compliant WKB support)
+- Added support for telemetry log levels, which can be controlled via the connection parameter `TelemetryLogLevel`. This allows users to configure the verbosity of telemetry logging from OFF to TRACE.
+- Added full support for JDBC transaction control methods in Databricks. Transaction support in Databricks is currently available as a Private Preview. The `IgnoreTransactions` connection parameter can be set to `1` to disable or no-op transaction control methods.
+- Added a new config attribute `DisableOauthRefreshToken` to control whether refresh tokens are requested in OAuth exchanges. By default, the driver does not include the `offline_access` scope. If `offline_access` is explicitly provided by the user, it is preserved and not removed.
+
+### Updated
+- Updated sdk version from 0.65.0 to 0.69.0
+
+### Fixed
+- Fixed SQL syntax error when LIKE queries contain empty ESCAPE clauses.
+- Fix: driver failing to authenticate on token update in U2M flow.
+- Fix: driver failing to parse complex data types with nullable attributes.
+- Fixed: Resolved SDK token-caching regression causing token refresh on every call. SDK is now configured once to avoid excessive token endpoint hits and rate limiting.
+- Fixed: TimestampConverter.toString() returning ISO8601 format with timezone conversion instead of SQL standard format.
+- Fixed: Driver not loading complete JSON result in the case of SEA Inline without Arrow
+---
+
+## [v3.0.3] - 2025-10-30
+### Added
+
+### Updated
+
+### Fixed
+- Fixed token endpoint regression, which caused excessive token refresh calls
+
+## [v3.0.1] - 2025-10-13: DEPRECATED, Use v3.0.3 instead 
+### Added
+- Added `enableMultipleCatalogSupport` connection parameter to control catalog metadata behavior.
+
+### Updated
+
+### Fixed
+- Fixed complex data type conversion issues by improving StringConverter to handle Databricks complex objects (arrays/maps/structs), JDBC arrays/structs, and generic collections.
+- Fixed ComplexDataTypeParser to correctly parse ISO timestamps with T separators and timezone offsets, preventing Arrow ingestion failures.
+---
+
+## [v1.0.11-oss] - 2025-10-06: DEPRECATED, Use v3.0.3 instead
+
+### Added
+- Enabled direct results by default in SEA mode to improve latency for short and small queries.
+
+### Updated
+- Telemetry data is now captured more efficiently and consistently due to enhancements in the log and connection close flush logic.
+- Updated Databricks SDK version to v0.65.0 (This is to fix OAuthClient to properly encode complex query parameters.)
+- Added IgnoreTransactions connection parameter to silently ignore transaction method calls.
+
+### Fixed
+- Fixed state leaking issue in thrift client.
+- Fixed timestamp values returning only milliseconds instead of the full nanosecond precision.
+- Fixed Statement.getUpdateCount() for DML queries.
+---
+
+## [v1.0.10-oss] - 2025-09-18: DEPRECATED, Use v3.0.3 instead
 ### Added
 - **Query Tags support**: Added ability to attach key-value tags to SQL queries for analytical purposes that would appear in `system.query.history` table. Example: `jdbc:databricks://host;QUERY_TAGS=team:marketing,dashboard:abc123`. (This feature is in [private preview](https://docs.databricks.com/aws/en/release-notes/release-types#:~:text=Private%20Preview-,Invite%20only,-No))
 - **SQL Scripting support**: Added support for [SQL Scripting](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-scripting)

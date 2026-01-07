@@ -9,6 +9,8 @@ import com.databricks.jdbc.common.CompressionCodec;
 import com.databricks.jdbc.common.DatabricksClientType;
 import com.databricks.jdbc.common.DatabricksJdbcUrlParams;
 import com.databricks.jdbc.common.IDatabricksComputeResource;
+import com.databricks.jdbc.common.SeaCircuitBreakerManager;
+import com.databricks.jdbc.common.StatementType;
 import com.databricks.jdbc.dbclient.IDatabricksClient;
 import com.databricks.jdbc.dbclient.IDatabricksMetadataClient;
 import com.databricks.jdbc.dbclient.impl.sqlexec.DatabricksEmptyMetadataClient;
@@ -16,14 +18,17 @@ import com.databricks.jdbc.dbclient.impl.sqlexec.DatabricksMetadataSdkClient;
 import com.databricks.jdbc.dbclient.impl.sqlexec.DatabricksSdkClient;
 import com.databricks.jdbc.dbclient.impl.thrift.DatabricksThriftServiceClient;
 import com.databricks.jdbc.exception.DatabricksHttpException;
+import com.databricks.jdbc.exception.DatabricksRateLimitException;
 import com.databricks.jdbc.exception.DatabricksSQLException;
 import com.databricks.jdbc.exception.DatabricksTemporaryRedirectException;
 import com.databricks.jdbc.log.JdbcLogger;
 import com.databricks.jdbc.log.JdbcLoggerFactory;
+import com.databricks.jdbc.model.telemetry.enums.DatabricksDriverErrorCode;
 import com.databricks.jdbc.telemetry.TelemetryHelper;
 import com.databricks.jdbc.telemetry.latency.DatabricksMetricsTimedProcessor;
 import com.databricks.sdk.support.ToStringer;
 import com.google.common.annotations.VisibleForTesting;
+import java.util.HashMap;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -44,6 +49,10 @@ public class DatabricksSession implements IDatabricksSession {
   private String catalog;
 
   private String schema;
+
+  /** Auto-commit mode for transactions (JDBC default is true) */
+  private boolean autoCommit = true;
+
   private final Map<String, String> sessionConfigs;
   private final Map<String, String> clientInfoProperties;
   private final CompressionCodec compressionCodec;
@@ -56,19 +65,10 @@ public class DatabricksSession implements IDatabricksSession {
    */
   public DatabricksSession(IDatabricksConnectionContext connectionContext)
       throws DatabricksSQLException {
-    if (connectionContext.getClientType() == DatabricksClientType.THRIFT) {
-      this.databricksClient =
-          DatabricksMetricsTimedProcessor.createProxy(
-              new DatabricksThriftServiceClient(connectionContext));
-    } else {
-      this.databricksClient =
-          DatabricksMetricsTimedProcessor.createProxy(new DatabricksSdkClient(connectionContext));
-      this.databricksMetadataClient =
-          DatabricksMetricsTimedProcessor.createProxy(
-              new DatabricksMetadataSdkClient(databricksClient));
-    }
     this.isSessionOpen = false;
     this.sessionInfo = null;
+    this.databricksClient = null;
+    this.databricksMetadataClient = null;
     this.computeResource = connectionContext.getComputeResource();
     this.catalog = connectionContext.getCatalog();
     this.schema = connectionContext.getSchema();
@@ -133,6 +133,22 @@ public class DatabricksSession implements IDatabricksSession {
   @Override
   public void open() throws DatabricksSQLException {
     LOGGER.debug("public void open()");
+
+    // Skip for tests, it would be already set
+    if (databricksClient == null) {
+      if (connectionContext.getClientType() == DatabricksClientType.THRIFT) {
+        this.databricksClient =
+            DatabricksMetricsTimedProcessor.createProxy(
+                new DatabricksThriftServiceClient(connectionContext));
+      } else {
+        this.databricksClient =
+            DatabricksMetricsTimedProcessor.createProxy(new DatabricksSdkClient(connectionContext));
+        this.databricksMetadataClient =
+            DatabricksMetricsTimedProcessor.createProxy(
+                new DatabricksMetadataSdkClient(databricksClient));
+      }
+    }
+
     synchronized (this) {
       if (!isSessionOpen) {
         try {
@@ -147,6 +163,41 @@ public class DatabricksSession implements IDatabricksSession {
           this.sessionInfo =
               this.databricksClient.createSession(
                   this.computeResource, this.catalog, this.schema, this.sessionConfigs);
+        } catch (DatabricksRateLimitException e) {
+          // Handle 429 rate limit error during SEA session creation
+          // Only handle if using SEA client (not applicable to Thrift)
+          if (connectionContext.getClientType() == DatabricksClientType.SEA) {
+            LOGGER.warn(
+                "SEA session creation failed with HTTP {} (rate limit exceeded) after retries. "
+                    + "Recording failure and falling back to Thrift client for this connection. "
+                    + "Future connections will use Thrift for the next 24 hours.",
+                SeaCircuitBreakerManager.HTTP_TOO_MANY_REQUESTS);
+            // Record the failure to open circuit breaker for future connections
+            SeaCircuitBreakerManager.record429Failure();
+            // Fall back to Thrift for this connection
+            this.connectionContext.setClientType(DatabricksClientType.THRIFT);
+            this.databricksClient =
+                DatabricksMetricsTimedProcessor.createProxy(
+                    new DatabricksThriftServiceClient(connectionContext));
+            this.databricksMetadataClient = null;
+            try {
+              this.sessionInfo =
+                  this.databricksClient.createSession(
+                      this.computeResource, this.catalog, this.schema, this.sessionConfigs);
+            } catch (DatabricksSQLException fallbackException) {
+              throw new DatabricksSQLException(
+                  String.format(
+                      "SEA session creation failed with HTTP %d rate limit, "
+                          + "and Thrift fallback also failed: %s",
+                      SeaCircuitBreakerManager.HTTP_TOO_MANY_REQUESTS,
+                      fallbackException.getMessage()),
+                  fallbackException,
+                  DatabricksDriverErrorCode.CONNECTION_ERROR);
+            }
+          } else {
+            // Re-throw if not from SEA client (shouldn't happen, but defensive)
+            throw e;
+          }
         }
         this.isSessionOpen = true;
       }
@@ -278,6 +329,30 @@ public class DatabricksSession implements IDatabricksSession {
   }
 
   @Override
+  public String getCurrentCatalog() throws DatabricksSQLException {
+    try {
+      DatabricksResultSet resultSet =
+          databricksClient.executeStatement(
+              "SELECT CURRENT_CATALOG()",
+              this.computeResource,
+              new HashMap<>(),
+              StatementType.METADATA,
+              this,
+              null);
+
+      if (resultSet.next()) {
+        String currentCatalog = resultSet.getString(1);
+        return currentCatalog;
+      }
+    } catch (Exception e) {
+      LOGGER.warn(
+          "Failed to get current catalog from database, falling back to session catalog: {}",
+          e.getMessage());
+    }
+    return this.catalog;
+  }
+
+  @Override
   public void setEmptyMetadataClient() {
     databricksMetadataClient = new DatabricksEmptyMetadataClient(connectionContext);
   }
@@ -291,5 +366,17 @@ public class DatabricksSession implements IDatabricksSession {
     } finally {
       this.isSessionOpen = false;
     }
+  }
+
+  @Override
+  public void setAutoCommit(boolean autoCommit) {
+    LOGGER.debug("public void setAutoCommit(boolean autoCommit = {})", autoCommit);
+    this.autoCommit = autoCommit;
+  }
+
+  @Override
+  public boolean getAutoCommit() {
+    LOGGER.debug("public boolean getAutoCommit()");
+    return this.autoCommit;
   }
 }

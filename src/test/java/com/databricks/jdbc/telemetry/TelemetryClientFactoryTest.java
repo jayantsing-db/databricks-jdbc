@@ -44,8 +44,8 @@ public class TelemetryClientFactoryTest {
     ITelemetryClient telemetryClient =
         TelemetryClientFactory.getInstance().getTelemetryClient(context);
     assertInstanceOf(NoopTelemetryClient.class, telemetryClient);
-    assertEquals(0, TelemetryClientFactory.getInstance().telemetryClients.size());
-    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClients.size());
+    assertEquals(0, TelemetryClientFactory.getInstance().telemetryClientHolders.size());
+    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClientHolders.size());
   }
 
   @Test
@@ -58,11 +58,11 @@ public class TelemetryClientFactoryTest {
     ITelemetryClient telemetryClient =
         TelemetryClientFactory.getInstance().getTelemetryClient(context);
     assertInstanceOf(TelemetryClient.class, telemetryClient);
-    assertEquals(1, TelemetryClientFactory.getInstance().telemetryClients.size());
-    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClients.size());
+    assertEquals(1, TelemetryClientFactory.getInstance().telemetryClientHolders.size());
+    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClientHolders.size());
     TelemetryClientFactory.getInstance().closeTelemetryClient(context);
-    assertEquals(0, TelemetryClientFactory.getInstance().telemetryClients.size());
-    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClients.size());
+    assertEquals(0, TelemetryClientFactory.getInstance().telemetryClientHolders.size());
+    assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClientHolders.size());
     TelemetryClientFactory.getInstance().closeTelemetryClient(context);
   }
 
@@ -76,12 +76,13 @@ public class TelemetryClientFactoryTest {
     // Mock TelemetryHelper to return null for DatabricksConfig
     try (MockedStatic<TelemetryHelper> mockedStatic = mockStatic(TelemetryHelper.class)) {
       mockedStatic.when(() -> TelemetryHelper.getDatabricksConfigSafely(context)).thenReturn(null);
+      mockedStatic.when(() -> TelemetryHelper.keyOf(any())).thenCallRealMethod();
       ITelemetryClient telemetryClient =
           TelemetryClientFactory.getInstance().getTelemetryClient(context);
 
       assertInstanceOf(NoopTelemetryClient.class, telemetryClient);
-      assertEquals(0, TelemetryClientFactory.getInstance().telemetryClients.size());
-      assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClients.size());
+      assertEquals(0, TelemetryClientFactory.getInstance().telemetryClientHolders.size());
+      assertEquals(0, TelemetryClientFactory.getInstance().noauthTelemetryClientHolders.size());
       TelemetryClientFactory.getInstance().closeTelemetryClient(context);
     }
   }

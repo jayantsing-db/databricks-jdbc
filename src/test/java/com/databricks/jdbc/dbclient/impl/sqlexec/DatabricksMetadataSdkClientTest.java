@@ -6,11 +6,13 @@ import static com.databricks.jdbc.dbclient.impl.common.CommandConstants.*;
 import static com.databricks.jdbc.dbclient.impl.common.ImportedKeysDatabricksResultSetAdapter.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.databricks.jdbc.api.impl.DatabricksResultSet;
 import com.databricks.jdbc.api.impl.DatabricksResultSetMetaData;
 import com.databricks.jdbc.api.impl.ImmutableSqlParameter;
+import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
 import com.databricks.jdbc.api.internal.IDatabricksSession;
 import com.databricks.jdbc.common.CommandName;
 import com.databricks.jdbc.common.IDatabricksComputeResource;
@@ -18,7 +20,6 @@ import com.databricks.jdbc.common.StatementType;
 import com.databricks.jdbc.dbclient.impl.common.CrossReferenceKeysDatabricksResultSetAdapter;
 import com.databricks.jdbc.dbclient.impl.common.ImportedKeysDatabricksResultSetAdapter;
 import com.databricks.jdbc.exception.DatabricksSQLException;
-import com.databricks.jdbc.exception.DatabricksValidationException;
 import com.databricks.jdbc.model.core.ResultColumn;
 import com.databricks.sdk.service.sql.StatementState;
 import java.sql.ResultSet;
@@ -48,25 +49,25 @@ public class DatabricksMetadataSdkClientTest {
   private static Stream<Arguments> listTableTestParams() {
     return Stream.of(
         Arguments.of(
-            "SHOW TABLES IN CATALOG catalog1 SCHEMA LIKE 'testSchema' LIKE 'testTable'",
+            "SHOW TABLES IN CATALOG `catalog1` SCHEMA LIKE 'testSchema' LIKE 'testTable'",
             TEST_CATALOG,
             TEST_SCHEMA,
             TEST_TABLE,
             "test for table and schema"),
         Arguments.of(
-            "SHOW TABLES IN CATALOG catalog1",
+            "SHOW TABLES IN CATALOG `catalog1`",
             TEST_CATALOG,
             null,
             null,
             "test for all tables and schemas"),
         Arguments.of(
-            "SHOW TABLES IN CATALOG catalog1 SCHEMA LIKE 'testSchema'",
+            "SHOW TABLES IN CATALOG `catalog1` SCHEMA LIKE 'testSchema'",
             TEST_CATALOG,
             TEST_SCHEMA,
             null,
             "test for all tables"),
         Arguments.of(
-            "SHOW TABLES IN CATALOG catalog1 LIKE 'testTable'",
+            "SHOW TABLES IN CATALOG `catalog1` LIKE 'testTable'",
             TEST_CATALOG,
             null,
             TEST_TABLE,
@@ -75,26 +76,27 @@ public class DatabricksMetadataSdkClientTest {
 
   private static Stream<Arguments> listSchemasTestParams() {
     return Stream.of(
-        Arguments.of("SHOW SCHEMAS IN catalog1 LIKE 'testSchema'", TEST_SCHEMA, "test for schema"),
-        Arguments.of("SHOW SCHEMAS IN catalog1", null, "test for all schemas"));
+        Arguments.of(
+            "SHOW SCHEMAS IN `catalog1` LIKE 'testSchema'", TEST_SCHEMA, "test for schema"),
+        Arguments.of("SHOW SCHEMAS IN `catalog1`", null, "test for all schemas"));
   }
 
   private static Stream<Arguments> listFunctionsTestParams() {
     return Stream.of(
         Arguments.of(
-            "SHOW FUNCTIONS IN CATALOG catalog1 SCHEMA LIKE 'testSchema' LIKE 'functionPattern'",
+            "SHOW FUNCTIONS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema' LIKE 'functionPattern'",
             TEST_CATALOG,
             TEST_SCHEMA,
             TEST_FUNCTION_PATTERN,
             "test for get functions"),
         Arguments.of(
-            "SHOW FUNCTIONS IN CATALOG catalog1 LIKE 'functionPattern'",
+            "SHOW FUNCTIONS IN CATALOG `catalog1` LIKE 'functionPattern'",
             TEST_CATALOG,
             null,
             TEST_FUNCTION_PATTERN,
             "test for get functions without schema"),
         Arguments.of(
-            "SHOW FUNCTIONS IN CATALOG catalog1 SCHEMA LIKE 'testSchema'",
+            "SHOW FUNCTIONS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema'",
             TEST_CATALOG,
             TEST_SCHEMA,
             null,
@@ -104,56 +106,56 @@ public class DatabricksMetadataSdkClientTest {
   private static Stream<Arguments> listColumnTestParams() {
     return Stream.of(
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 SCHEMA LIKE 'testSchema' TABLE LIKE 'testTable'",
+            "SHOW COLUMNS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema' TABLE LIKE 'testTable'",
             TEST_CATALOG,
             TEST_TABLE,
             TEST_SCHEMA,
             null,
             "test for table and schema"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1",
+            "SHOW COLUMNS IN CATALOG `catalog1`",
             TEST_CATALOG,
             null,
             null,
             null,
             "test for all tables and schemas"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 SCHEMA LIKE 'testSchema'",
+            "SHOW COLUMNS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema'",
             TEST_CATALOG,
             null,
             TEST_SCHEMA,
             null,
             "test for schema"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 TABLE LIKE 'testTable'",
+            "SHOW COLUMNS IN CATALOG `catalog1` TABLE LIKE 'testTable'",
             TEST_CATALOG,
             TEST_TABLE,
             null,
             null,
             "test for table"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 SCHEMA LIKE 'testSchema' TABLE LIKE 'testTable' LIKE 'testColumn'",
+            "SHOW COLUMNS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema' TABLE LIKE 'testTable' LIKE 'testColumn'",
             TEST_CATALOG,
             TEST_TABLE,
             TEST_SCHEMA,
             TEST_COLUMN,
             "test for table, schema and column"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 LIKE 'testColumn'",
+            "SHOW COLUMNS IN CATALOG `catalog1` LIKE 'testColumn'",
             TEST_CATALOG,
             null,
             null,
             TEST_COLUMN,
             "test for column"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 SCHEMA LIKE 'testSchema' LIKE 'testColumn'",
+            "SHOW COLUMNS IN CATALOG `catalog1` SCHEMA LIKE 'testSchema' LIKE 'testColumn'",
             TEST_CATALOG,
             null,
             TEST_SCHEMA,
             TEST_COLUMN,
             "test for schema and column"),
         Arguments.of(
-            "SHOW COLUMNS IN CATALOG catalog1 TABLE LIKE 'testTable' LIKE 'testColumn'",
+            "SHOW COLUMNS IN CATALOG `catalog1` TABLE LIKE 'testTable' LIKE 'testColumn'",
             TEST_CATALOG,
             TEST_TABLE,
             null,
@@ -195,6 +197,12 @@ public class DatabricksMetadataSdkClientTest {
 
   @Test
   void testListTableTypes() throws SQLException {
+    // Mock the connection context for the table types test
+    IDatabricksConnectionContext mockConnectionContext =
+        org.mockito.Mockito.mock(IDatabricksConnectionContext.class);
+    when(mockConnectionContext.getEnableMetricViewMetadata()).thenReturn(false);
+    when(mockClient.getConnectionContext()).thenReturn(mockConnectionContext);
+
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     DatabricksResultSet actualResult = metadataClient.listTableTypes(session);
     assertEquals(actualResult.getStatementStatus().getState(), StatementState.SUCCEEDED);
@@ -446,7 +454,7 @@ public class DatabricksMetadataSdkClientTest {
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<Integer, ImmutableSqlParameter>(),
             StatementType.METADATA,
@@ -482,7 +490,7 @@ public class DatabricksMetadataSdkClientTest {
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW FOREIGN KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<>(),
             StatementType.METADATA,
@@ -525,9 +533,12 @@ public class DatabricksMetadataSdkClientTest {
         new DatabricksSQLException(
             "syntax error at or near \"foreign\"", PARSE_SYNTAX_ERROR_SQL_STATE);
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW FOREIGN KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<>(),
             StatementType.METADATA,
@@ -586,7 +597,7 @@ public class DatabricksMetadataSdkClientTest {
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW FOREIGN KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<>(),
             StatementType.METADATA,
@@ -661,9 +672,10 @@ public class DatabricksMetadataSdkClientTest {
         new DatabricksSQLException(
             "syntax error at or near \"foreign\"", PARSE_SYNTAX_ERROR_SQL_STATE);
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    when(mockClient.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW FOREIGN KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<>(),
             StatementType.METADATA,
@@ -692,7 +704,7 @@ public class DatabricksMetadataSdkClientTest {
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
-            "SHOW FOREIGN KEYS IN CATALOG catalog1 IN SCHEMA testSchema IN TABLE testTable",
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
             WAREHOUSE_COMPUTE,
             new HashMap<>(),
             StatementType.METADATA,
@@ -776,17 +788,67 @@ public class DatabricksMetadataSdkClientTest {
   }
 
   @Test
-  void testThrowsErrorResultInCaseOfNullCatalog() {
+  void testListFunctionsWithNullCatalog() throws SQLException {
+    when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    when(session.getCurrentCatalog()).thenReturn("current_catalog");
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
+
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
-    assertThrows(
-        DatabricksValidationException.class,
-        () -> metadataClient.listColumns(session, null, TEST_SCHEMA, TEST_TABLE, TEST_COLUMN));
-    assertThrows(
-        DatabricksValidationException.class,
-        () -> metadataClient.listPrimaryKeys(session, null, TEST_SCHEMA, TEST_TABLE));
-    assertThrows(
-        DatabricksValidationException.class,
-        () -> metadataClient.listFunctions(session, null, TEST_SCHEMA, TEST_TABLE));
+
+    String expectedSQL =
+        "SHOW FUNCTIONS IN CATALOG `current_catalog` SCHEMA LIKE 'testSchema' LIKE 'functionPattern'";
+    when(mockClient.executeStatement(
+            expectedSQL,
+            WAREHOUSE_COMPUTE,
+            new HashMap<Integer, ImmutableSqlParameter>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenReturn(mockedResultSet);
+    when(mockedResultSet.next()).thenReturn(true, false);
+    doReturn(6).when(mockedMetaData).getColumnCount();
+    doReturn(FUNCTION_NAME_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(1);
+    doReturn(FUNCTION_SCHEMA_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(2);
+    doReturn(FUNCTION_CATALOG_COLUMN.getResultSetColumnName())
+        .when(mockedMetaData)
+        .getColumnName(3);
+    doReturn(REMARKS_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(4);
+    doReturn(FUNCTION_TYPE_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(5);
+    doReturn(SPECIFIC_NAME_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(6);
+    when(mockedResultSet.getMetaData()).thenReturn(mockedMetaData);
+
+    DatabricksResultSet actualResult =
+        metadataClient.listFunctions(session, null, TEST_SCHEMA, TEST_FUNCTION_PATTERN);
+
+    assertEquals(StatementState.SUCCEEDED, actualResult.getStatementStatus().getState());
+    assertEquals(GET_FUNCTIONS_STATEMENT_ID, actualResult.getStatementId());
+    assertEquals(1, ((DatabricksResultSetMetaData) actualResult.getMetaData()).getTotalRows());
+  }
+
+  @Test
+  void testReturnsEmptyResultSetInCaseOfNullCatalog() throws SQLException {
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+
+    // listPrimaryKeys with null catalog should return empty ResultSet
+    DatabricksResultSet primaryKeysResult =
+        metadataClient.listPrimaryKeys(session, null, TEST_SCHEMA, TEST_TABLE);
+    assertNotNull(primaryKeysResult);
+    assertFalse(
+        primaryKeysResult.next(),
+        "Expected empty result set for listPrimaryKeys with null catalog");
+
+    // listImportedKeys with null catalog should return empty ResultSet
+    DatabricksResultSet importedKeysResult =
+        metadataClient.listImportedKeys(session, null, TEST_SCHEMA, TEST_TABLE);
+    assertNotNull(importedKeysResult);
+    assertFalse(
+        importedKeysResult.next(),
+        "Expected empty result set for listImportedKeys with null catalog");
   }
 
   @Test
@@ -839,6 +901,9 @@ public class DatabricksMetadataSdkClientTest {
     DatabricksSQLException exception =
         new DatabricksSQLException("syntax error at or near \"IN\"", PARSE_SYNTAX_ERROR_SQL_STATE);
     when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
     DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
     when(mockClient.executeStatement(
             "SHOW TABLES IN ALL CATALOGS SCHEMA LIKE 'testSchema' LIKE 'testTable'",
@@ -856,5 +921,187 @@ public class DatabricksMetadataSdkClientTest {
       // Parse syntax error is handled gracefully to return empty result set
       assertEquals(0, ((DatabricksResultSetMetaData) actualResult.getMetaData()).getTotalRows());
     }
+  }
+
+  @Test
+  void testListSchemasWithMultipleCatalogSupportEnabled() throws SQLException {
+    when(session.getComputeResource()).thenReturn(mockedComputeResource);
+    when(mockClient.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
+    when(mockClient.getConnectionContext().getEnableMultipleCatalogSupport()).thenReturn(true);
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+
+    String expectedSQL = "SHOW SCHEMAS IN ALL CATALOGS";
+    when(mockClient.executeStatement(
+            expectedSQL,
+            mockedComputeResource,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenReturn(mockedResultSet);
+
+    when(mockedResultSet.next()).thenReturn(true, true, true, false);
+    when(mockedResultSet.getObject("databaseName")).thenReturn("schema1", "schema2", "schema3");
+    doReturn(2).when(mockedMetaData).getColumnCount();
+    doReturn(SCHEMA_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(1);
+    doReturn(CATALOG_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(2);
+    when(mockedResultSet.getMetaData()).thenReturn(mockedMetaData);
+    when(mockedResultSet.findColumn(CATALOG_RESULT_COLUMN.getResultSetColumnName()))
+        .thenThrow(DatabricksSQLException.class);
+
+    DatabricksResultSet actualResult = metadataClient.listSchemas(session, null, null);
+
+    assertEquals(StatementState.SUCCEEDED, actualResult.getStatementStatus().getState());
+    assertEquals(METADATA_STATEMENT_ID, actualResult.getStatementId());
+    assertEquals(3, ((DatabricksResultSetMetaData) actualResult.getMetaData()).getTotalRows());
+  }
+
+  @Test
+  void testListSchemasWithMultipleCatalogSupportDisabled() throws SQLException {
+    when(session.getComputeResource()).thenReturn(mockedComputeResource);
+    when(session.getCurrentCatalog()).thenReturn("current_catalog");
+    when(mockClient.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
+    when(mockClient.getConnectionContext().getEnableMultipleCatalogSupport()).thenReturn(false);
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+
+    String expectedSQL = "SHOW SCHEMAS IN `current_catalog`";
+    when(mockClient.executeStatement(
+            expectedSQL,
+            mockedComputeResource,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenReturn(mockedResultSet);
+
+    when(mockedResultSet.next()).thenReturn(true, true, false);
+    when(mockedResultSet.getObject("databaseName")).thenReturn("schema1", "schema2");
+    doReturn(2).when(mockedMetaData).getColumnCount();
+    doReturn(SCHEMA_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(1);
+    doReturn(CATALOG_COLUMN.getResultSetColumnName()).when(mockedMetaData).getColumnName(2);
+    when(mockedResultSet.getMetaData()).thenReturn(mockedMetaData);
+    when(mockedResultSet.findColumn(CATALOG_RESULT_COLUMN.getResultSetColumnName()))
+        .thenThrow(DatabricksSQLException.class);
+
+    DatabricksResultSet actualResult = metadataClient.listSchemas(session, null, null);
+
+    assertEquals(StatementState.SUCCEEDED, actualResult.getStatementStatus().getState());
+    assertEquals(METADATA_STATEMENT_ID, actualResult.getStatementId());
+    assertEquals(2, ((DatabricksResultSetMetaData) actualResult.getMetaData()).getTotalRows());
+  }
+
+  @Test
+  void testListTables_handlesNullSqlStateWithoutNPE() throws Exception {
+    DatabricksSQLException exception =
+        new DatabricksSQLException(
+            "[SCHEMA_NOT_FOUND] The schema cannot be found. SQLSTATE: 42704", (String) null);
+
+    when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+    when(mockClient.executeStatement(
+            "SHOW TABLES IN CATALOG ``",
+            WAREHOUSE_COMPUTE,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenThrow(exception);
+
+    // This should throw the original exception, not NPE
+    assertThrows(
+        DatabricksSQLException.class,
+        () -> metadataClient.listTables(session, "", null, null, null));
+  }
+
+  @Test
+  void testListSchemas_handlesNullSqlStateWithoutNPE() throws Exception {
+    DatabricksSQLException exception =
+        new DatabricksSQLException(
+            "syntax error at or near \"ALL CATALOGS\"", (String) null); // null SQL state
+
+    when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+    when(mockClient.executeStatement(
+            "SHOW SCHEMAS IN ALL CATALOGS",
+            WAREHOUSE_COMPUTE,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenThrow(exception);
+
+    // This should throw the original exception, not NPE
+    assertThrows(
+        DatabricksSQLException.class, () -> metadataClient.listSchemas(session, null, null));
+  }
+
+  @Test
+  void testListImportedKeys_handlesNullSqlStateWithoutNPE() throws Exception {
+    DatabricksSQLException exception =
+        new DatabricksSQLException(
+            "syntax error at or near \"foreign\"", (String) null); // null SQL state
+
+    when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    IDatabricksConnectionContext mockContext = mock(IDatabricksConnectionContext.class);
+    when(mockContext.getEnableMultipleCatalogSupport()).thenReturn(true);
+    when(mockClient.getConnectionContext()).thenReturn(mockContext);
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+    when(mockClient.executeStatement(
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
+            WAREHOUSE_COMPUTE,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenThrow(exception);
+
+    // This should throw the original exception, not NPE
+    assertThrows(
+        DatabricksSQLException.class,
+        () -> metadataClient.listImportedKeys(session, TEST_CATALOG, TEST_SCHEMA, TEST_TABLE));
+  }
+
+  @Test
+  void testListCrossReferences_handlesNullSqlStateWithoutNPE() throws Exception {
+    DatabricksSQLException exception =
+        new DatabricksSQLException(
+            "syntax error at or near \"foreign\"", (String) null); // null SQL state
+
+    when(session.getComputeResource()).thenReturn(WAREHOUSE_COMPUTE);
+    when(mockClient.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
+
+    DatabricksMetadataSdkClient metadataClient = new DatabricksMetadataSdkClient(mockClient);
+    when(mockClient.executeStatement(
+            "SHOW FOREIGN KEYS IN CATALOG `catalog1` IN SCHEMA `testSchema` IN TABLE `testTable`",
+            WAREHOUSE_COMPUTE,
+            new HashMap<>(),
+            StatementType.METADATA,
+            session,
+            null))
+        .thenThrow(exception);
+
+    // This should throw the original exception, not NPE
+    assertThrows(
+        DatabricksSQLException.class,
+        () ->
+            metadataClient.listCrossReferences(
+                session,
+                "parentCatalog",
+                "parentSchema",
+                "parentTable",
+                TEST_CATALOG,
+                TEST_SCHEMA,
+                TEST_TABLE));
   }
 }

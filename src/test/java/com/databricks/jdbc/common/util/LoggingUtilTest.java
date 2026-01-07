@@ -18,6 +18,15 @@ public class LoggingUtilTest {
     assertDoesNotThrow(() -> LoggingUtil.setupLogger("test.log", 1, 1, LogLevel.DEBUG));
   }
 
+  @Test
+  void testSetupLoggerWithOffLevel() {
+    // When log level is OFF, setupLogger initializes logger with Level.OFF to suppress all output.
+    // It uses STDOUT to avoid file system access issues in restricted environments.
+    // This should not throw an exception even if the log path is not writable.
+    assertDoesNotThrow(() -> LoggingUtil.setupLogger("/", 1, 1, LogLevel.OFF));
+    assertDoesNotThrow(() -> LoggingUtil.setupLogger("/invalid/path", 1, 1, LogLevel.OFF));
+  }
+
   @ParameterizedTest
   @MethodSource("logLevelToJulLevelProvider")
   void testToJulLevel(LogLevel input, Level expected) {
@@ -32,6 +41,7 @@ public class LoggingUtilTest {
         org.junit.jupiter.params.provider.Arguments.of(LogLevel.FATAL, Level.SEVERE),
         org.junit.jupiter.params.provider.Arguments.of(LogLevel.INFO, Level.INFO),
         org.junit.jupiter.params.provider.Arguments.of(LogLevel.TRACE, Level.FINEST),
-        org.junit.jupiter.params.provider.Arguments.of(LogLevel.WARN, Level.WARNING));
+        org.junit.jupiter.params.provider.Arguments.of(LogLevel.WARN, Level.WARNING),
+        org.junit.jupiter.params.provider.Arguments.of(LogLevel.OFF, Level.OFF));
   }
 }

@@ -1,6 +1,7 @@
 package com.databricks.jdbc.common.safe;
 
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
+import com.databricks.jdbc.telemetry.TelemetryHelper;
 import com.google.common.annotations.VisibleForTesting;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,7 +23,7 @@ public class DatabricksDriverFeatureFlagsContextFactory {
    */
   public static DatabricksDriverFeatureFlagsContext getInstance(
       IDatabricksConnectionContext context) {
-    String key = keyOf(context);
+    String key = TelemetryHelper.keyOf(context);
     FeatureFlagsContextHolder holder =
         contextMap.compute(
             key,
@@ -46,7 +47,7 @@ public class DatabricksDriverFeatureFlagsContextFactory {
    */
   public static void removeInstance(IDatabricksConnectionContext connectionContext) {
     if (connectionContext != null) {
-      String key = keyOf(connectionContext);
+      String key = TelemetryHelper.keyOf(connectionContext);
       contextMap.computeIfPresent(
           key,
           (k, holder) -> {
@@ -63,16 +64,12 @@ public class DatabricksDriverFeatureFlagsContextFactory {
   }
 
   @VisibleForTesting
-  static void setFeatureFlagsContext(
+  public static void setFeatureFlagsContext(
       IDatabricksConnectionContext connectionContext, Map<String, String> featureFlags) {
-    String key = keyOf(connectionContext);
+    String key = TelemetryHelper.keyOf(connectionContext);
     contextMap.put(
         key,
         new FeatureFlagsContextHolder(
             new DatabricksDriverFeatureFlagsContext(connectionContext, featureFlags), 1));
-  }
-
-  private static String keyOf(IDatabricksConnectionContext context) {
-    return context.getComputeResource().getUniqueIdentifier();
   }
 }

@@ -5,6 +5,7 @@ import java.sql.DriverPropertyInfo;
 /** Enum to hold all the Databricks JDBC URL parameters. */
 public enum DatabricksJdbcUrlParams {
   LOG_LEVEL("loglevel", "Log level for debugging"),
+  TELEMETRY_LOG_LEVEL("telemetryLogLevel", "Log level for telemetry logs", "DEBUG"),
   LOG_PATH("logpath", "Path to the log file"),
   LOG_FILE_SIZE("LogFileSize", "Maximum size of the log file", "10"), // 10 MB
   LOG_FILE_COUNT("LogFileCount", "Number of log files to retain", "10"),
@@ -47,7 +48,7 @@ public enum DatabricksJdbcUrlParams {
   USE_JWT_ASSERTION("UseJWTAssertion", "Use JWT assertion", "0"),
   OIDC_DISCOVERY_MODE("EnableOIDCDiscovery", "OIDC discovery mode", "1"),
   DISCOVERY_MODE("OAuthDiscoveryMode", "OAuth discovery mode", "1"), // Same as OIDC_DISCOVERY_MODE
-  AUTH_SCOPE("Auth_Scope", "Authentication scope", "all-apis"),
+  AUTH_SCOPE("Auth_Scope", "Authentication scope"),
   OIDC_DISCOVERY_ENDPOINT("OIDCDiscoveryEndpoint", "OIDC Discovery Endpoint"),
   DISCOVERY_URL("OAuthDiscoveryURL", "OAuth discovery URL"), // Same as OIDC_DISCOVERY_ENDPOINT
   IDENTITY_FEDERATION_CLIENT_ID(
@@ -94,6 +95,7 @@ public enum DatabricksJdbcUrlParams {
       "1"), // Note : telemetry enablement also depends on the server flag.
   TELEMETRY_BATCH_SIZE("TelemetryBatchSize", "Batch size for telemetry", "200"),
   MAX_BATCH_SIZE("MaxBatchSize", "Maximum batch size", "500"),
+  BATCH_INSERT_SIZE("BatchInsertSize", "Maximum number of rows per batch insert execution", "1000"),
   ALLOWED_VOLUME_INGESTION_PATHS("VolumeOperationAllowedLocalPaths", ""),
   ALLOWED_STAGING_INGESTION_PATHS("StagingAllowedLocalPaths", ""),
   UC_INGESTION_RETRIABLE_HTTP_CODE(
@@ -121,6 +123,10 @@ public enum DatabricksJdbcUrlParams {
   ENABLE_COMPLEX_DATATYPE_SUPPORT(
       "EnableComplexDatatypeSupport",
       "flag to enable native support of complex data types as java objects",
+      "0"),
+  ENABLE_GEOSPATIAL_SUPPORT(
+      "EnableGeoSpatialSupport",
+      "flag to enable native support of GEOMETRY and GEOGRAPHY data types. Requires EnableComplexDatatypeSupport=1",
       "0"),
   ROWS_FETCHED_PER_BLOCK(
       "RowsFetchedPerBlock",
@@ -163,7 +169,41 @@ public enum DatabricksJdbcUrlParams {
       "EnableSQLValidationForIsValid",
       "Enable SQL query execution for connection validation in isValid() method",
       "0"),
-  IGNORE_TRANSACTIONS("IgnoreTransactions", "Ignore transaction-related method calls", "0");
+  IGNORE_TRANSACTIONS("IgnoreTransactions", "Ignore transaction-related method calls", "0"),
+  FETCH_AUTOCOMMIT_FROM_SERVER(
+      "FetchAutoCommitFromServer",
+      "Fetch auto-commit state from server using SQL query instead of using cached value",
+      "0"),
+  ENABLE_METRIC_VIEW_METADATA("EnableMetricViewMetadata", "Enable metric view metadata", "0"),
+  ENABLE_MULTIPLE_CATALOG_SUPPORT(
+      "enableMultipleCatalogSupport", "Enable multiple catalog support", "1"),
+  ENABLE_CLOUD_FETCH("EnableQueryResultDownload", "Enable Cloud Fetch", "1"),
+  ENABLE_SEA_SYNC_METADATA(
+      "EnableSeaSyncMetadata",
+      "Enable x-databricks-sea-can-run-fully-sync header for synchronous metadata requests in SEA mode",
+      "1"),
+  DISABLE_OAUTH_REFRESH_TOKEN(
+      "DisableOauthRefreshToken",
+      "Disable requesting OAuth refresh tokens (omit offline_access unless explicitly provided)",
+      "1"),
+  ENABLE_TOKEN_FEDERATION(
+      "EnableTokenFederation", "Enable token federation for authentication", "1"),
+  ENABLE_STREAMING_CHUNK_PROVIDER(
+      "EnableStreamingChunkProvider",
+      "Enable streaming chunk provider for result fetching (experimental)",
+      "0"),
+  LINK_PREFETCH_WINDOW(
+      "LinkPrefetchWindow",
+      "Number of chunk links to prefetch ahead of consumption. "
+          + "Higher values reduce latency by having links ready sooner. "
+          + "Lower values reduce risk of link expiry for slow processing workloads",
+      "128"),
+  API_RETRIABLE_HTTP_CODES(
+      "ApiRetriableHttpCodes",
+      "Comma-separated list of HTTP status codes that should be retried irrespective of Retry-After header.",
+      ""),
+  API_RETRY_TIMEOUT(
+      "ApiRetryTimeout", "Timeout for retrying API retriable codes in seconds", "300");
 
   private final String paramName;
   private final String defaultValue;

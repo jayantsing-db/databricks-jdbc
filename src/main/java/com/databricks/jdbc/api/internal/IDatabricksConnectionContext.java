@@ -2,10 +2,12 @@ package com.databricks.jdbc.api.internal;
 
 import com.databricks.jdbc.common.*;
 import com.databricks.jdbc.exception.DatabricksParsingException;
+import com.databricks.jdbc.exception.DatabricksValidationException;
 import com.databricks.sdk.core.ProxyConfig;
 import com.databricks.sdk.core.utils.Cloud;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public interface IDatabricksConnectionContext {
 
@@ -53,6 +55,17 @@ public interface IDatabricksConnectionContext {
 
   String getClientSecret();
 
+  /**
+   * Returns the OAuth scopes to request for the user-to-machine (U2M) authorization flow.
+   *
+   * <p>If an explicit auth scope is provided via connection parameters, this returns a singleton
+   * list containing that scope. On AWS and GCP, this returns the SQL scope and offline access
+   * scope. On Azure, this returns {@code null} because the default scope is set by the Databricks
+   * SDK.
+   *
+   * @return a list of OAuth scopes to request, or {@code null} on Azure to use the SDK default
+   * @throws DatabricksParsingException if connection parameters cannot be parsed
+   */
   List<String> getOAuthScopesForU2M() throws DatabricksParsingException;
 
   AuthMech getAuthMech();
@@ -63,11 +76,13 @@ public interface IDatabricksConnectionContext {
 
   LogLevel getLogLevel();
 
+  TelemetryLogLevel getTelemetryLogLevel();
+
   String getLogPathString();
 
-  int getLogFileSize();
+  int getLogFileSize() throws DatabricksValidationException;
 
-  int getLogFileCount();
+  int getLogFileCount() throws DatabricksValidationException;
 
   /** Returns the userAgent string specific to client used to fetch results. */
   String getClientUserAgent();
@@ -99,6 +114,9 @@ public interface IDatabricksConnectionContext {
   /** Returns the value of the EnableSQLValidationForIsValid connection property. */
   boolean getEnableSQLValidationForIsValid();
 
+  /** Returns the value of the enableMultipleCatalogSupport connection property. */
+  boolean getEnableMultipleCatalogSupport();
+
   String getProxyHost();
 
   int getProxyPort();
@@ -129,7 +147,7 @@ public interface IDatabricksConnectionContext {
 
   String getEndpointURL() throws DatabricksParsingException;
 
-  int getAsyncExecPollInterval();
+  int getAsyncExecPollInterval() throws DatabricksValidationException;
 
   Boolean shouldEnableArrow();
 
@@ -140,7 +158,7 @@ public interface IDatabricksConnectionContext {
   Boolean getUseEmptyMetadata();
 
   /** Returns the number of threads to be used for fetching data from cloud storage */
-  int getCloudFetchThreadPoolSize();
+  int getCloudFetchThreadPoolSize() throws DatabricksValidationException;
 
   /** Returns the minimum expected download speed threshold in MB/s for CloudFetch operations */
   double getCloudFetchSpeedThreshold();
@@ -154,6 +172,10 @@ public interface IDatabricksConnectionContext {
   int getTemporarilyUnavailableRetryTimeout();
 
   int getRateLimitRetryTimeout();
+
+  Set<Integer> getApiRetriableHttpCodes();
+
+  int getApiRetryTimeout();
 
   int getIdleHttpConnectionExpiry();
 
@@ -244,13 +266,16 @@ public interface IDatabricksConnectionContext {
   String getSSLTrustStoreProvider();
 
   /** Returns the maximum number of commands that can be executed in a single batch. */
-  int getMaxBatchSize();
+  int getMaxBatchSize() throws DatabricksValidationException;
 
   /** Checks if Telemetry is enabled */
   boolean isTelemetryEnabled();
 
   /** Returns the batch size for Telemetry logs processing */
   int getTelemetryBatchSize();
+
+  /** Returns the maximum number of rows per batch insert execution */
+  int getBatchInsertSize() throws DatabricksValidationException;
 
   /**
    * Returns a unique identifier for this connection context.
@@ -281,8 +306,14 @@ public interface IDatabricksConnectionContext {
   /** Returns true if driver return complex data type java objects natively as opposed to string */
   boolean isComplexDatatypeSupportEnabled();
 
+  /**
+   * Returns true if driver returns GEOMETRY and GEOGRAPHY types natively. Requires
+   * isComplexDatatypeSupportEnabled() to be true
+   */
+  boolean isGeoSpatialSupportEnabled();
+
   /** Returns the size for HTTP connection pool */
-  int getHttpConnectionPoolSize();
+  int getHttpConnectionPoolSize() throws DatabricksValidationException;
 
   /** Returns the list of HTTP codes to retry for UC Volume Ingestion */
   List<Integer> getUCIngestionRetriableHttpCodes();
@@ -371,4 +402,39 @@ public interface IDatabricksConnectionContext {
 
   /** Returns whether transaction-related method calls should be ignored */
   boolean getIgnoreTransactions();
+
+  /**
+   * Returns whether to fetch auto-commit state from server using SQL query instead of cached value
+   */
+  boolean getFetchAutoCommitFromServer();
+
+  /* Returns whether metric view metadata is enabled */
+  boolean getEnableMetricViewMetadata();
+
+  /**
+   * Returns whether the x-databricks-sea-can-run-fully-sync header should be enabled for
+   * synchronous metadata requests in SEA mode
+   */
+  boolean isSeaSyncMetadataEnabled();
+
+  /** Returns whether OAuth refresh tokens should be disabled (omit offline_access by default). */
+  boolean getDisableOauthRefreshToken();
+
+  /** Returns whether token federation is enabled for authentication. */
+  boolean isTokenFederationEnabled();
+
+  /** Returns whether streaming chunk provider is enabled for result fetching. */
+  boolean isStreamingChunkProviderEnabled();
+
+  /**
+   * Returns the number of chunk links to prefetch ahead of consumption.
+   *
+   * <p>This controls how far ahead the streaming chunk provider fetches links before they are
+   * needed. Higher values reduce latency by ensuring links are ready when needed. Lower values
+   * reduce the risk of link expiry for workloads that process data slowly (e.g., heavy computation
+   * per row), since prefetched links may expire before being used.
+   *
+   * @return the link prefetch window size (default: 128)
+   */
+  int getLinkPrefetchWindow();
 }

@@ -7,6 +7,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
@@ -29,8 +31,14 @@ import java.sql.*;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Properties;
+import java.util.TimeZone;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -914,5 +922,445 @@ public class DatabricksPreparedStatementTest {
     assertThrows(
         DatabricksSQLException.class,
         () -> preparedStatement.execute("SELECT * FROM table", new String[] {"column"}));
+  }
+
+  @Test
+  public void testBatchedInsertWithManyParameters() throws Exception {
+    // Test that when supportManyParameters=1, batched inserts can exceed 256 parameters
+    // by using parameter interpolation instead of parameterized queries
+    String jdbcUrlWithBothFlags = JDBC_URL_WITH_MANY_PARAMETERS + "EnableBatchedInserts=1;";
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithBothFlags, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+    DatabricksPreparedStatement statement =
+        new DatabricksPreparedStatement(connection, BATCH_STATEMENT);
+
+    // Add 200 rows with 4 parameters each = 800 parameters (exceeds 256 limit)
+    for (int i = 1; i <= 200; i++) {
+      statement.setLong(1, 100 + i);
+      statement.setShort(2, (short) (10 + i));
+      statement.setByte(3, (byte) (i % 128));
+      statement.setString(4, "value" + i);
+      statement.addBatch();
+    }
+
+    // With supportManyParameters=1, all 200 rows should be batched in a single INSERT
+    // with interpolated values (not parameterized)
+    String expectedSqlPrefix = "INSERT INTO orders (user_id, shard, region_code, namespace) VALUES";
+    when(client.executeStatement(
+            org.mockito.ArgumentMatchers.startsWith(expectedSqlPrefix),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+    lenient().when(resultSet.getUpdateCount()).thenReturn(200L);
+
+    int[] updateCounts = statement.executeBatch();
+    assertEquals(200, updateCounts.length);
+    for (int count : updateCounts) {
+      assertEquals(1, count); // Each row should show 1 row affected
+    }
+  }
+
+  @Test
+  public void testBatchedInsertWithVeryLargeParameterCount() throws Exception {
+    // Test with 10,000 rows = 40,000 parameters to verify scalability
+    // This would require ~156 chunks with the old 256-parameter limit
+    // but now executes as a single batch with parameter interpolation
+    String jdbcUrlWithBothFlags = JDBC_URL_WITH_MANY_PARAMETERS + "EnableBatchedInserts=1;";
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithBothFlags, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+    DatabricksPreparedStatement statement =
+        new DatabricksPreparedStatement(connection, BATCH_STATEMENT);
+
+    // Add 10,000 rows with 4 parameters each = 40,000 parameters
+    int rowCount = 10000;
+    for (int i = 1; i <= rowCount; i++) {
+      statement.setLong(1, 100 + i);
+      statement.setShort(2, (short) (10 + (i % 1000)));
+      statement.setByte(3, (byte) (i % 128));
+      statement.setString(4, "value" + i);
+      statement.addBatch();
+    }
+
+    // With supportManyParameters=1, all 10,000 rows execute in a single INSERT
+    String expectedSqlPrefix = "INSERT INTO orders (user_id, shard, region_code, namespace) VALUES";
+    when(client.executeStatement(
+            org.mockito.ArgumentMatchers.startsWith(expectedSqlPrefix),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+    lenient().when(resultSet.getUpdateCount()).thenReturn((long) rowCount);
+
+    int[] updateCounts = statement.executeBatch();
+    assertEquals(rowCount, updateCounts.length);
+    for (int count : updateCounts) {
+      assertEquals(1, count); // Each row should show 1 row affected
+    }
+  }
+
+  @Test
+  public void testBatchedInsertWithCustomBatchInsertSize() throws Exception {
+    // Test that BatchInsertSize parameter controls chunking behavior
+    // With 8 columns and BatchInsertSize=50, max 50 rows per chunk
+    String jdbcUrlWithCustomBatchSize =
+        JDBC_URL_WITH_MANY_PARAMETERS + "EnableBatchedInserts=1;BatchInsertSize=50;";
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithCustomBatchSize, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+    DatabricksPreparedStatement statement =
+        new DatabricksPreparedStatement(connection, BATCH_STATEMENT);
+
+    // Add 200 rows, which should be split into 4 chunks of 50 rows each
+    for (int i = 1; i <= 200; i++) {
+      statement.setLong(1, 100 + i);
+      statement.setShort(2, (short) (10 + i));
+      statement.setByte(3, (byte) (i % 128));
+      statement.setString(4, "value" + i);
+      statement.addBatch();
+    }
+
+    // Verify BatchInsertSize is read correctly
+    assertEquals(50, connectionContext.getBatchInsertSize());
+
+    // Mock will be called 4 times (200 rows / 50 batch size = 4 chunks)
+    String expectedSqlPrefix = "INSERT INTO orders (user_id, shard, region_code, namespace) VALUES";
+    when(client.executeStatement(
+            org.mockito.ArgumentMatchers.startsWith(expectedSqlPrefix),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+    lenient().when(resultSet.getUpdateCount()).thenReturn(50L);
+
+    int[] updateCounts = statement.executeBatch();
+    assertEquals(200, updateCounts.length);
+    for (int count : updateCounts) {
+      assertEquals(1, count); // Each row should show 1 row affected
+    }
+
+    // CRITICAL: Verify that executeStatement was called exactly 4 times (4 chunks of 50 rows)
+    verify(client, times(4))
+        .executeStatement(
+            org.mockito.ArgumentMatchers.startsWith(expectedSqlPrefix),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement));
+  }
+
+  @Test
+  public void testBatchInsertSizeDefaultValue() throws Exception {
+    // Test that BatchInsertSize defaults to 1000 when not specified
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(JDBC_URL_WITH_BATCHED_INSERTS, new Properties());
+    assertEquals(1000, connectionContext.getBatchInsertSize());
+  }
+
+  @Test
+  public void testBatchInsertSizeRespectsParameterLimit() throws Exception {
+    // Test that without supportManyParameters, the driver still respects 256 parameter limit
+    // even if BatchInsertSize is higher
+    String jdbcUrlWithHighBatchSize = JDBC_URL_WITH_BATCHED_INSERTS + "BatchInsertSize=5000;";
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithHighBatchSize, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+    DatabricksPreparedStatement statement =
+        new DatabricksPreparedStatement(connection, BATCH_STATEMENT);
+
+    // Add 100 rows with 4 columns = 400 parameters (exceeds 256 limit)
+    for (int i = 1; i <= 100; i++) {
+      statement.setLong(1, 100 + i);
+      statement.setShort(2, (short) (10 + i));
+      statement.setByte(3, (byte) (i % 128));
+      statement.setString(4, "value" + i);
+      statement.addBatch();
+    }
+
+    // Without supportManyParameters, should chunk at 256/4 = 64 rows
+    // even though BatchInsertSize=5000
+    String expectedSqlPrefix = "INSERT INTO orders (user_id, shard, region_code, namespace) VALUES";
+    when(client.executeStatement(
+            org.mockito.ArgumentMatchers.startsWith(expectedSqlPrefix),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+    lenient().when(resultSet.getUpdateCount()).thenReturn(64L);
+
+    int[] updateCounts = statement.executeBatch();
+    assertEquals(100, updateCounts.length);
+  }
+
+  @Test
+  public void testBatchedInsertWithTimestampsGeneratesQuotedSQL() throws Exception {
+    // Test that timestamps are properly quoted in the generated SQL during batched inserts
+    String jdbcUrlWithBothFlags = JDBC_URL_WITH_MANY_PARAMETERS + "EnableBatchedInserts=1;";
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithBothFlags, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+
+    String insertSql = "INSERT INTO events (id, name, created_at) VALUES (?, ?, ?)";
+    DatabricksPreparedStatement statement = new DatabricksPreparedStatement(connection, insertSql);
+
+    // Add 2 rows with timestamps
+    Timestamp ts1 = Timestamp.valueOf("2024-01-01 12:30:45.123");
+    Timestamp ts2 = Timestamp.valueOf("2024-02-15 08:15:30.456");
+
+    statement.setInt(1, 1);
+    statement.setString(2, "Event One");
+    statement.setTimestamp(3, ts1);
+    statement.addBatch();
+
+    statement.setInt(1, 2);
+    statement.setString(2, "Event Two");
+    statement.setTimestamp(3, ts2);
+    statement.addBatch();
+
+    // Capture the SQL that gets executed
+    ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(client.executeStatement(
+            sqlCaptor.capture(),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+    lenient().when(resultSet.getUpdateCount()).thenReturn(2L);
+
+    int[] updateCounts = statement.executeBatch();
+    assertEquals(2, updateCounts.length);
+
+    // Capture and validate the entire generated INSERT statement
+    String executedSql = sqlCaptor.getValue();
+
+    String expectedSql =
+        "INSERT INTO events (id, name, created_at) VALUES "
+            + "(1, 'Event One', '2024-01-01 12:30:45.123'), "
+            + "(2, 'Event Two', '2024-02-15 08:15:30.456')";
+
+    assertEquals(
+        expectedSql,
+        executedSql,
+        "Generated SQL should exactly match expected format with quoted timestamps");
+  }
+
+  @Test
+  public void testRejectsNegativeBatchSize() throws Exception {
+    // Test that negative BatchInsertSize is rejected to prevent infinite loops
+
+    String jdbcUrlWithInvalidBatchSize =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:4423/default;"
+            + "transportMode=http;ssl=1;AuthMech=3;"
+            + "httpPath=/sql/1.0/warehouses/99999999;"
+            + "supportManyParameters=1;EnableBatchedInserts=1;"
+            + "BatchInsertSize=-1;"; // Invalid negative batch size
+
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithInvalidBatchSize, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+
+    String insertSql = "INSERT INTO test_table (id) VALUES (?)";
+    DatabricksPreparedStatement statement = new DatabricksPreparedStatement(connection, insertSql);
+
+    statement.setInt(1, 1);
+    statement.addBatch();
+    statement.setInt(1, 2);
+    statement.addBatch();
+
+    // Should throw SQLException about invalid batch size
+    SQLException exception = assertThrows(SQLException.class, () -> statement.executeBatch());
+    assertTrue(
+        exception.getMessage().contains("Invalid value for BatchInsertSize"),
+        "Exception should mention invalid BatchInsertSize: " + exception.getMessage());
+  }
+
+  @Test
+  public void testRejectsZeroBatchSize() throws Exception {
+    // Test that zero BatchInsertSize is rejected
+
+    String jdbcUrlWithZeroBatchSize =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:4423/default;"
+            + "transportMode=http;ssl=1;AuthMech=3;"
+            + "httpPath=/sql/1.0/warehouses/99999999;"
+            + "supportManyParameters=1;EnableBatchedInserts=1;"
+            + "BatchInsertSize=0;"; // Invalid zero batch size
+
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(jdbcUrlWithZeroBatchSize, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+
+    String insertSql = "INSERT INTO test_table (id) VALUES (?)";
+    DatabricksPreparedStatement statement = new DatabricksPreparedStatement(connection, insertSql);
+
+    statement.setInt(1, 1);
+    statement.addBatch();
+
+    // Should throw SQLException about invalid batch size
+    SQLException exception = assertThrows(SQLException.class, () -> statement.executeBatch());
+    assertTrue(
+        exception.getMessage().contains("Invalid value for BatchInsertSize"),
+        "Exception should mention invalid BatchInsertSize: " + exception.getMessage());
+  }
+
+  @Test
+  public void testSetTimestampWithCalendarPreservesMicroseconds() throws Exception {
+    // Test that microsecond precision is preserved when using setTimestamp with Calendar
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(JDBC_URL_WITH_MANY_PARAMETERS, new Properties());
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+
+    String sql = "UPDATE test_table SET ts = ? WHERE id = ?";
+    DatabricksPreparedStatement statement = new DatabricksPreparedStatement(connection, sql);
+
+    // Create a timestamp with microsecond precision (185.645 milliseconds = 185645000 nanoseconds)
+    Timestamp originalTs = Timestamp.valueOf("2025-11-21 23:30:49.185645");
+    assertEquals(
+        185645000, originalTs.getNanos(), "Original timestamp should have microsecond precision");
+
+    // Set timestamp with a Calendar (UTC timezone)
+    Calendar calendar = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"));
+    statement.setTimestamp(1, originalTs, calendar);
+    statement.setInt(2, 123);
+
+    // Capture the SQL that gets executed
+    ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(client.executeStatement(
+            sqlCaptor.capture(),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+
+    statement.executeUpdate();
+
+    // Calculate expected timestamp after timezone conversion
+    Calendar defaultCal = Calendar.getInstance();
+    defaultCal.setTimeInMillis(originalTs.getTime());
+
+    Calendar expectedCal = (Calendar) calendar.clone();
+    expectedCal.set(Calendar.YEAR, defaultCal.get(Calendar.YEAR));
+    expectedCal.set(Calendar.MONTH, defaultCal.get(Calendar.MONTH));
+    expectedCal.set(Calendar.DAY_OF_MONTH, defaultCal.get(Calendar.DAY_OF_MONTH));
+    expectedCal.set(Calendar.HOUR_OF_DAY, defaultCal.get(Calendar.HOUR_OF_DAY));
+    expectedCal.set(Calendar.MINUTE, defaultCal.get(Calendar.MINUTE));
+    expectedCal.set(Calendar.SECOND, defaultCal.get(Calendar.SECOND));
+    expectedCal.set(Calendar.MILLISECOND, 0);
+
+    Timestamp expectedTs = new Timestamp(expectedCal.getTimeInMillis());
+    expectedTs.setNanos(originalTs.getNanos());
+
+    // Verify the executed SQL contains the expected timestamp
+    String executedSql = sqlCaptor.getValue();
+
+    // Verify full timestamp with microsecond precision is preserved
+    assertTrue(
+        executedSql.contains(expectedTs.toString()),
+        "Executed SQL should match expected timestamp: expected="
+            + expectedTs.toString()
+            + ", actual="
+            + executedSql);
+
+    // Verify microsecond precision is preserved (6 decimal places, not truncated to 3)
+    assertTrue(
+        executedSql.matches(".*\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}.*"),
+        "Executed SQL should have microsecond precision (6 decimal places): " + executedSql);
+
+    // Verify nanosecond value is exactly preserved
+    assertEquals(
+        185645000,
+        expectedTs.getNanos(),
+        "Nanosecond precision should be preserved in converted timestamp");
+  }
+
+  static Stream<Arguments> dstTestCases() {
+    return Stream.of(
+        Arguments.of("Spring Forward (Non-existent time)", "2024-03-10 02:30:00.185645"),
+        Arguments.of("Fall Back (Ambiguous time)", "2024-11-03 01:30:00.185645"));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("dstTestCases")
+  public void testSetTimestampWithCalendarDSTTransitions(String testName, String timestampLiteral)
+      throws Exception {
+
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(JDBC_URL_WITH_MANY_PARAMETERS, new Properties());
+
+    DatabricksConnection connection = new DatabricksConnection(connectionContext, client);
+
+    String sql = "UPDATE test_table SET ts = ? WHERE id = ?";
+    DatabricksPreparedStatement statement = new DatabricksPreparedStatement(connection, sql);
+
+    // Create timestamp (either Spring forward gap or Fall back overlap)
+    Timestamp originalTs = Timestamp.valueOf(timestampLiteral);
+
+    assertEquals(
+        185645000, originalTs.getNanos(), "Original timestamp must preserve microsecond precision");
+
+    // Use New York calendar (DST-enabled)
+    Calendar nyCalendar = Calendar.getInstance(TimeZone.getTimeZone("America/New_York"));
+
+    statement.setTimestamp(1, originalTs, nyCalendar);
+    statement.setInt(2, 123);
+
+    // Build expected timestamp by reinterpreting fields in target TZ
+    Calendar defaultCal = Calendar.getInstance();
+    defaultCal.setTimeInMillis(originalTs.getTime());
+
+    Calendar expectedCal = (Calendar) nyCalendar.clone();
+    expectedCal.set(Calendar.YEAR, defaultCal.get(Calendar.YEAR));
+    expectedCal.set(Calendar.MONTH, defaultCal.get(Calendar.MONTH));
+    expectedCal.set(Calendar.DAY_OF_MONTH, defaultCal.get(Calendar.DAY_OF_MONTH));
+    expectedCal.set(Calendar.HOUR_OF_DAY, defaultCal.get(Calendar.HOUR_OF_DAY));
+    expectedCal.set(Calendar.MINUTE, defaultCal.get(Calendar.MINUTE));
+    expectedCal.set(Calendar.SECOND, defaultCal.get(Calendar.SECOND));
+    expectedCal.set(Calendar.MILLISECOND, 0);
+
+    // Lenient mode resolves both gap and ambiguity
+    Timestamp expectedTs = new Timestamp(expectedCal.getTimeInMillis());
+    expectedTs.setNanos(originalTs.getNanos());
+
+    // Capture executed SQL
+    ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(client.executeStatement(
+            sqlCaptor.capture(),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            any(HashMap.class),
+            eq(StatementType.UPDATE),
+            any(IDatabricksSession.class),
+            eq(statement)))
+        .thenReturn(resultSet);
+
+    statement.executeUpdate();
+
+    String executedSql = sqlCaptor.getValue();
+
+    // Validation
+    assertTrue(
+        executedSql.contains(expectedTs.toString()),
+        "DST behavior incorrect for "
+            + testName
+            + ": expected="
+            + expectedTs
+            + ", actual="
+            + executedSql);
+
+    assertEquals(
+        185645000, expectedTs.getNanos(), "Nanosecond precision must be preserved for " + testName);
   }
 }

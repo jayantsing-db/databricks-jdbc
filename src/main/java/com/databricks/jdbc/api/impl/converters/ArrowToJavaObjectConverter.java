@@ -1,10 +1,6 @@
 package com.databricks.jdbc.api.impl.converters;
 
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.ARRAY;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.MAP;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.STRUCT;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.TIMESTAMP;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.VARIANT;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.*;
 
 import com.databricks.jdbc.api.impl.*;
 import com.databricks.jdbc.exception.DatabricksParsingException;
@@ -32,6 +28,7 @@ import org.apache.arrow.vector.util.Text;
 public class ArrowToJavaObjectConverter {
   private static final JdbcLogger LOGGER =
       JdbcLoggerFactory.getLogger(ArrowToJavaObjectConverter.class);
+
   private static final List<DateTimeFormatter> DATE_FORMATTERS =
       Arrays.asList(
           DateTimeFormatter.ofPattern("yyyy-MM-dd"),
@@ -86,6 +83,12 @@ public class ArrowToJavaObjectConverter {
       if (arrowMetadata.startsWith(TIMESTAMP)) { // for timestamp_ntz column
         requiredType = ColumnInfoTypeName.TIMESTAMP;
       }
+      if (arrowMetadata.startsWith(GEOMETRY)) {
+        requiredType = ColumnInfoTypeName.GEOMETRY;
+      }
+      if (arrowMetadata.startsWith(GEOGRAPHY)) {
+        requiredType = ColumnInfoTypeName.GEOGRAPHY;
+      }
     }
     if (object == null) {
       return null;
@@ -136,6 +139,9 @@ public class ArrowToJavaObjectConverter {
         }
         IntervalConverter ic = new IntervalConverter(arrowMetadata);
         return ic.toLiteral(object);
+      case GEOMETRY:
+      case GEOGRAPHY:
+        return convertToGeospatial(object, requiredType);
       case NULL:
         return null;
       default:
@@ -161,6 +167,21 @@ public class ArrowToJavaObjectConverter {
       throws DatabricksParsingException {
     ComplexDataTypeParser parser = new ComplexDataTypeParser();
     return parser.parseJsonStringToDbStruct(object.toString(), arrowMetadata);
+  }
+
+  private static AbstractDatabricksGeospatial convertToGeospatial(
+      Object object, ColumnInfoTypeName type) throws DatabricksSQLException {
+    String ewkt = convertToString(object);
+
+    // Parse EWKT to extract SRID from data
+    // SRID is always present in EWKT unless it's 0, in which case it is handled in
+    // WKTConverter.extractSRIDFromEWKT()
+    int srid = WKTConverter.extractSRIDFromEWKT(ewkt);
+    String cleanWkt = WKTConverter.removeSRIDFromEWKT(ewkt);
+
+    return type == ColumnInfoTypeName.GEOMETRY
+        ? new DatabricksGeometry(cleanWkt, srid)
+        : new DatabricksGeography(cleanWkt, srid);
   }
 
   private static Object convertToTimestamp(Object object, Optional<String> timeZoneOpt)

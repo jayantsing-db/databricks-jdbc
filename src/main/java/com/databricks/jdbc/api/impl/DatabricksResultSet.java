@@ -1,13 +1,12 @@
 package com.databricks.jdbc.api.impl;
 
 import static com.databricks.jdbc.common.DatabricksJdbcConstants.EMPTY_STRING;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.ARRAY;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.MAP;
-import static com.databricks.jdbc.common.util.DatabricksTypeUtil.STRUCT;
+import static com.databricks.jdbc.common.util.DatabricksTypeUtil.*;
 
 import com.databricks.jdbc.api.IDatabricksResultSet;
 import com.databricks.jdbc.api.IExecutionStatus;
 import com.databricks.jdbc.api.impl.arrow.ArrowStreamResult;
+import com.databricks.jdbc.api.impl.arrow.ChunkProvider;
 import com.databricks.jdbc.api.impl.converters.ConverterHelper;
 import com.databricks.jdbc.api.impl.converters.ObjectConverter;
 import com.databricks.jdbc.api.impl.volume.VolumeOperationResult;
@@ -43,6 +42,7 @@ import java.time.*;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 import org.apache.http.entity.InputStreamEntity;
 
@@ -479,13 +479,29 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
   }
 
   /**
-   * Checks if the given type name represents a complex type (ARRAY, MAP, or STRUCT).
+   * Checks if the given type name represents a complex type (ARRAY, MAP, STRUCT, GEOMETRY, or
+   * GEOGRAPHY).
    *
    * @param typeName The type name to check
-   * @return true if the type name starts with ARRAY, MAP, or STRUCT, false otherwise
+   * @return true if the type name starts with ARRAY, MAP, STRUCT, GEOMETRY, or GEOGRAPHY, false
+   *     otherwise
    */
   private static boolean isComplexType(String typeName) {
-    return typeName.startsWith(ARRAY) || typeName.startsWith(MAP) || typeName.startsWith(STRUCT);
+    return typeName.startsWith(ARRAY)
+        || typeName.startsWith(MAP)
+        || typeName.startsWith(STRUCT)
+        || typeName.startsWith(GEOMETRY)
+        || typeName.startsWith(GEOGRAPHY);
+  }
+
+  /**
+   * Checks if the given type name represents a geospatial type (GEOMETRY or GEOGRAPHY).
+   *
+   * @param typeName The type name to check
+   * @return true if the type name starts with GEOMETRY or GEOGRAPHY, false otherwise
+   */
+  private static boolean isGeospatialType(String typeName) {
+    return typeName.startsWith(GEOMETRY) || typeName.startsWith(GEOGRAPHY);
   }
 
   @Override
@@ -500,6 +516,13 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
     // separate handling for complex data types
     if (isComplexType(columnTypeName)) {
       return handleComplexDataTypes(obj, columnTypeName);
+    }
+    // VARIANT types should only accept String objects
+    if (VARIANT.equals(columnTypeName)) {
+      if (!(obj instanceof String)) {
+        throw new DatabricksValidationException(
+            "VARIANT type only supports String objects, got: " + obj.getClass().getSimpleName());
+      }
     }
     // TODO: Add separate handling for INTERVAL JSON_ARRAY result format.
     return ConverterHelper.convertSqlTypeToJavaType(columnType, obj);
@@ -523,6 +546,10 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
       return parser.parseJsonStringToDbMap(obj.toString(), columnName).toString();
     } else if (columnName.startsWith(STRUCT)) {
       return parser.parseJsonStringToDbStruct(obj.toString(), columnName).toString();
+    } else if (columnName.startsWith(GEOMETRY)) {
+      return obj;
+    } else if (columnName.startsWith(GEOGRAPHY)) {
+      return obj;
     }
     throw new DatabricksParsingException(
         "Unexpected metadata format. Type is not a COMPLEX: " + columnName,
@@ -1250,11 +1277,12 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
   }
 
   /**
-   * Retrieves the SQL `Map` from the specified column index in the result set.
+   * Retrieves the SQL {@code Map} from the specified column index in the result set.
    *
    * @param columnIndex the index of the column in the result set (1-based)
-   * @return a `Map<String, Object>` if the column contains a map; `null` if the value is SQL `NULL`
-   * @throws SQLException if the column is not of `MAP` type or if any SQL error occurs
+   * @return a {@code Map<String, Object>} if the column contains a map; {@code null} if the value
+   *     is SQL {@code NULL}
+   * @throws SQLException if the column is not of {@code MAP} type or if any SQL error occurs
    */
   @Override
   public Map getMap(int columnIndex) throws SQLException {
@@ -1961,7 +1989,11 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
       return defaultValue.get();
     }
     int columnType = resultSetMetaData.getColumnType(columnIndex);
-    ObjectConverter converter = ConverterHelper.getConverterForSqlType(columnType);
+    String columnTypeName = resultSetMetaData.getColumnTypeName(columnIndex);
+
+    // Use metadata-aware converter selection for proper handling of databricks-specific types
+    ObjectConverter converter =
+        ConverterHelper.getConverterForColumnType(columnType, columnTypeName);
     return convertMethod.apply(converter, obj);
   }
 
@@ -1976,6 +2008,14 @@ public class DatabricksResultSet implements IDatabricksResultSet, IDatabricksRes
       return bigDecimal;
     }
     return bigDecimal.setScale(scale, RoundingMode.HALF_UP);
+  }
+
+  @VisibleForTesting
+  public Optional<ChunkProvider> getChunkProvider() {
+    if (executionResult instanceof ArrowStreamResult) {
+      return Optional.ofNullable(((ArrowStreamResult) executionResult).getChunkProvider());
+    }
+    return Optional.empty();
   }
 
   @Override
