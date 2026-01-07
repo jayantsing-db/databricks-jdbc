@@ -13,7 +13,7 @@ The Databricks JDBC driver supports Java Util Logging (JUL) and SLF4J logging fr
 
 ## Fat JAR Logging
 
-The fat JAR bundles all dependencies with shading. **Only JUL logging is natively supported.**
+The fat JAR bundles all dependencies with shading. **Only JUL logging is natively supported.** The fat JAR includes an SLF4J-to-JUL bridge, so logs from internal libraries (Databricks SDK, Apache HTTP client, etc.) are automatically routed to JUL and will appear in your configured log output.
 
 ### Configuration via JDBC URL
 
@@ -144,9 +144,8 @@ This argument is required to bypass the driver's internal JUL configuration and 
         </encoder>
     </appender>
 
-    <!-- Databricks JDBC Driver logs -->
-    <logger name="com.databricks.jdbc" level="DEBUG"/>
-    <logger name="com.databricks.client.jdbc" level="DEBUG"/>
+    <!-- Databricks JDBC Driver logs (includes SDK, HTTP client, etc.) -->
+    <logger name="com.databricks" level="DEBUG"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
@@ -154,10 +153,4 @@ This argument is required to bypass the driver's internal JUL configuration and 
 </configuration>
 ```
 
----
-
-## Limitations
-
-The fat JAR's shading architecture limits logging capture to driver code only. Internal library logs (HTTP client) are not capturable through the JUL-to-SLF4J bridge.
-
-**Recommendation:** For programmatic applications requiring full logging flexibility and integration, use the thin JAR with your preferred SLF4J binding.
+The `com.databricks` logger captures all driver logs including shaded internal libraries (Databricks SDK, Apache HTTP client, etc.).
