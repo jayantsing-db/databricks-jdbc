@@ -172,15 +172,6 @@ public abstract class AbstractArrowResultChunk {
   }
 
   /**
-   * Returns the external link for this chunk.
-   *
-   * @return the external link, or null if not set
-   */
-  protected ExternalLink getChunkLink() {
-    return chunkLink;
-  }
-
-  /**
    * Returns the current status of the chunk.
    *
    * @return current ChunkStatus
