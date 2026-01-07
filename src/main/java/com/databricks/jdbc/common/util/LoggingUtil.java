@@ -19,6 +19,12 @@ public class LoggingUtil {
       throws IOException {
     if (LOGGER instanceof JulLogger && System.getProperty(JAVA_UTIL_LOGGING_CONFIG_FILE) == null) {
       // Only configure JUL logger if it's not already configured via external properties file
+      if (level == LogLevel.OFF) {
+        // Initialize logger with OFF level to properly suppress all output.
+        // Without this, JUL falls back to default behavior and logs warnings to console.
+        JulLogger.initLogger(Level.OFF, JulLogger.STDOUT, 0, 0);
+        return;
+      }
       JulLogger.initLogger(toJulLevel(level), logDir, logFileSizeMB * 1024 * 1024, logFileCount);
       LOGGER.info("Setting up JUL logger");
     }

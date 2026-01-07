@@ -1,4 +1,43 @@
 # Version Changelog
+## [v3.0.7] - 2025-12-18
+
+### Updated
+- Log timestamps now explicitly display timezone.
+- **[Breaking Change]** `PreparedStatement.setTimestamp(int, Timestamp, Calendar)` now properly applies Calendar timezone conversion using LocalDateTime pattern (inline with `getTimestamp`). Previously Calendar parameter was ineffective.
+- `DatabaseMetaData.getColumns()` with null catalog parameter now retrieves columns from all catalogs when using SQL Execution API, aligning the behaviour with thrift.
+- `DatabaseMetaData.getFunctions()` with null catalog parameter now retrieves columns from the current catalog when using SQL Execution API, aligning the behaviour with thrift.
+
+### Fixed
+- Fix timeout exception handling to throw `SQLTimeoutException` instead of `DatabricksSQLException` when queries timeout.
+- Removes dangerous global timezone modification that caused race conditions.
+- Fixed `Statement.getLargeUpdateCount()` to return -1 instead of throwing Exception when there were no more results or result is not an update count.
+- CVE-2025-66566. Updated lz4-java dependency to 1.10.1.
+- Fix `INVALID_IDENTIFIER` error when using catalog/schema/table names for SQL Exec API with hyphens or special characters in metadata operations (`getSchemas()`, `getTables()`, `getColumns()`, etc.) and connection methods (`setCatalog()`, `setSchema()`). Per Databricks identifier rules, special characters are now properly enclosed in backticks.
+- Fix Auth_Scope handling inconsistency in Azure U2M OAuth.
+
+---
+
+## [v3.0.6] - 2025-12-11
+
+### Added
+- Added the EnableTokenFederation url param to enable or disable Token federation feature. By default it is set to 1
+- Added the ApiRetriableHttpCodes, ApiRetryTimeout url params to enable retries for specific HTTP codes irrespective of Retry-After header. By default the HTTP codes list is empty.
+
+### Updated
+- Added validation for positive integer configuration properties (RowsFetchedPerBlock, BatchInsertSize, etc.) to prevent hangs and errors when set to zero or negative values.
+- Updated Circuit breaker to be triggered by 429 errors too.
+- Refactored chunk download to keep a sliding window of chunk links. The window advances as the main thread consumes chunks. These changes can be enabled using the connection property EnableStreamingChunkProvider=1. The changes are expected to make chunk download faster and robust.
+- Added separate circuit breaker to handle 429 from SQL Exec API connection creation calls, and fall back to Thrift.
+
+### Fixed
+- Fix driver crash when using `INTERVAL` types.
+- Fix connection failure in restricted environments when `LogLevel.OFF` is used.
+- Fix U2M by including SDK OAuth HTML callback resources.
+- Fix microsecond precision loss in `PreparedStatement.setTimestamp(int,Timestamp, Calendar)` and address thread-safety issues with global timezone modification.
+- Fix metadata methods (`getColumns`, `getFunctions`, `getPrimaryKeys`, `getImportedKeys`) to return empty ResultSets instead of throwing exceptions when catalog parameter is NULL, for SQL Exec API.
+
+---
+
 ## [v3.0.5] - 2025-11-20
 
 ### Added
@@ -26,10 +65,10 @@
 
 ---
 
-## [v3.0.4] - 2025-11-12
+## [v3.0.4] - 2025-11-12: DEPRECATED, Use v3.0.5 instead
 
 ### Added
-- Added support for geospatial data types.
+- Added support for geospatial data types. (Use v3.0.5+ for OGC compliant WKB support)
 - Added support for telemetry log levels, which can be controlled via the connection parameter `TelemetryLogLevel`. This allows users to configure the verbosity of telemetry logging from OFF to TRACE.
 - Added full support for JDBC transaction control methods in Databricks. Transaction support in Databricks is currently available as a Private Preview. The `IgnoreTransactions` connection parameter can be set to `1` to disable or no-op transaction control methods.
 - Added a new config attribute `DisableOauthRefreshToken` to control whether refresh tokens are requested in OAuth exchanges. By default, the driver does not include the `offline_access` scope. If `offline_access` is explicitly provided by the user, it is preserved and not removed.

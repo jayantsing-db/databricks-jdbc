@@ -101,7 +101,7 @@ public class DatabricksConnectionTest {
     connection = new DatabricksConnection(connectionContext, databricksClient);
     connection.open();
     when(databricksClient.executeStatement(
-            eq("SET CATALOG hive_metastore"),
+            eq("SET CATALOG `hive_metastore`"),
             eq(new Warehouse(WAREHOUSE_ID)),
             eq(new HashMap<>()),
             eq(StatementType.SQL),
@@ -109,7 +109,7 @@ public class DatabricksConnectionTest {
             any()))
         .thenReturn(resultSet);
     when(databricksClient.executeStatement(
-            eq("USE SCHEMA default"),
+            eq("USE SCHEMA `default`"),
             eq(new Warehouse(WAREHOUSE_ID)),
             eq(new HashMap<>()),
             eq(StatementType.SQL),
@@ -122,6 +122,56 @@ public class DatabricksConnectionTest {
     assertEquals(connection.getSchema(), SCHEMA);
     connection.setSchema(DEFAULT_SCHEMA);
     assertEquals(connection.getSchema(), DEFAULT_SCHEMA);
+  }
+
+  @Test
+  public void testSetCatalogAndSchemaWithHyphenatedIdentifiers() throws SQLException {
+    when(databricksClient.createSession(
+            new Warehouse(WAREHOUSE_ID), CATALOG, SCHEMA, new HashMap<>()))
+        .thenReturn(IMMUTABLE_SESSION_INFO);
+    connection = new DatabricksConnection(connectionContext, databricksClient);
+    connection.open();
+
+    String catalogWithHyphen = "catalog-with-hyphen";
+    when(databricksClient.executeStatement(
+            eq("SET CATALOG `" + catalogWithHyphen + "`"),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            eq(new HashMap<>()),
+            eq(StatementType.SQL),
+            any(),
+            any()))
+        .thenReturn(resultSet);
+    connection.setCatalog(catalogWithHyphen);
+    assertEquals(connection.getCatalog(), catalogWithHyphen);
+
+    String schemaWithHyphen = "schema-with-hyphen";
+    when(databricksClient.executeStatement(
+            eq("USE SCHEMA `" + schemaWithHyphen + "`"),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            eq(new HashMap<>()),
+            eq(StatementType.SQL),
+            any(),
+            any()))
+        .thenReturn(resultSet);
+    connection.setSchema(schemaWithHyphen);
+    assertEquals(connection.getSchema(), schemaWithHyphen);
+
+    verify(databricksClient)
+        .executeStatement(
+            eq("SET CATALOG `" + catalogWithHyphen + "`"),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            eq(new HashMap<>()),
+            eq(StatementType.SQL),
+            any(),
+            any());
+    verify(databricksClient)
+        .executeStatement(
+            eq("USE SCHEMA `" + schemaWithHyphen + "`"),
+            eq(new Warehouse(WAREHOUSE_ID)),
+            eq(new HashMap<>()),
+            eq(StatementType.SQL),
+            any(),
+            any());
   }
 
   @Test
@@ -156,7 +206,7 @@ public class DatabricksConnectionTest {
     connection = new DatabricksConnection(connectionContext, databricksClient);
     connection.open();
     when(databricksClient.executeStatement(
-            eq("SET CATALOG invalid catalog"),
+            eq("SET CATALOG `invalid catalog`"),
             eq(new Warehouse(WAREHOUSE_ID)),
             eq(new HashMap<>()),
             eq(StatementType.SQL),
@@ -167,7 +217,7 @@ public class DatabricksConnectionTest {
                 "[PARSE_SYNTAX_ERROR] Syntax error at or near 'schema'",
                 DatabricksDriverErrorCode.EXECUTE_STATEMENT_FAILED));
     when(databricksClient.executeStatement(
-            eq("USE SCHEMA invalid schema"),
+            eq("USE SCHEMA `invalid schema`"),
             eq(new Warehouse(WAREHOUSE_ID)),
             eq(new HashMap<>()),
             eq(StatementType.SQL),
@@ -960,6 +1010,76 @@ public class DatabricksConnectionTest {
 
     // Verify statement was closed even after exception
     verify(mockStatement).close();
+
+    spyConnection.close();
+  }
+
+  // ==================== SetAutoCommit Optimization Tests ====================
+
+  @Test
+  public void testSetAutoCommitSkipsServerCallWhenAlreadyTrue() throws SQLException {
+    when(databricksClient.createSession(
+            new Warehouse(WAREHOUSE_ID), CATALOG, SCHEMA, new HashMap<>()))
+        .thenReturn(IMMUTABLE_SESSION_INFO);
+    connection = new DatabricksConnection(connectionContext, databricksClient);
+    connection.open();
+
+    DatabricksConnection spyConnection = spy(connection);
+
+    assertTrue(spyConnection.getAutoCommit());
+
+    spyConnection.setAutoCommit(true);
+
+    // Verify createStatement was never called (no server round-trip)
+    verify(spyConnection, never()).createStatement();
+
+    spyConnection.close();
+  }
+
+  @Test
+  public void testSetAutoCommitSkipsServerCallWhenAlreadyFalse() throws SQLException {
+    when(databricksClient.createSession(
+            new Warehouse(WAREHOUSE_ID), CATALOG, SCHEMA, new HashMap<>()))
+        .thenReturn(IMMUTABLE_SESSION_INFO);
+    connection = new DatabricksConnection(connectionContext, databricksClient);
+    connection.open();
+
+    DatabricksConnection spyConnection = spy(connection);
+
+    spyConnection.getSession().setAutoCommit(false);
+    assertFalse(spyConnection.getAutoCommit());
+
+    spyConnection.setAutoCommit(false);
+
+    // Verify createStatement was never called
+    verify(spyConnection, never()).createStatement();
+
+    spyConnection.close();
+  }
+
+  @Test
+  public void testSetAutoCommitDoesNotSkipWithFetchFromServerEnabled() throws SQLException {
+    // Create connection with FetchAutoCommitFromServer=1
+    String urlWithFetch = CATALOG_SCHEMA_JDBC_URL + ";FetchAutoCommitFromServer=1";
+    IDatabricksConnectionContext contextWithFetch =
+        DatabricksConnectionContext.parse(urlWithFetch, new Properties());
+
+    when(databricksClient.createSession(
+            new Warehouse(WAREHOUSE_ID), CATALOG, SCHEMA, new HashMap<>()))
+        .thenReturn(IMMUTABLE_SESSION_INFO);
+    connection = new DatabricksConnection(contextWithFetch, databricksClient);
+    connection.open();
+
+    DatabricksConnection spyConnection = spy(connection);
+    DatabricksStatement mockStatement = mock(DatabricksStatement.class);
+    doReturn(mockStatement).when(spyConnection).createStatement();
+    when(mockStatement.execute("SET AUTOCOMMIT = TRUE")).thenReturn(true);
+
+    // Even though autoCommit is already true, server should be called
+    spyConnection.setAutoCommit(true);
+
+    // Verify server was called
+    verify(mockStatement).execute("SET AUTOCOMMIT = TRUE");
 
     spyConnection.close();
   }

@@ -65,10 +65,12 @@ public abstract class AbstractArrowResultChunk {
   static final class ArrowData {
     private final List<List<ValueVector>> valueVectors;
     private final List<String> metadata;
+    private final long rowCount;
 
-    public ArrowData(List<List<ValueVector>> valueVectors, List<String> metadata) {
+    public ArrowData(List<List<ValueVector>> valueVectors, List<String> metadata, long rowCount) {
       this.valueVectors = valueVectors;
       this.metadata = metadata;
+      this.rowCount = rowCount;
     }
 
     public List<List<ValueVector>> getValueVectors() {
@@ -77,6 +79,10 @@ public abstract class AbstractArrowResultChunk {
 
     public List<String> getMetadata() {
       return metadata;
+    }
+
+    public long getRowCount() {
+      return rowCount;
     }
   }
 
@@ -111,6 +117,15 @@ public abstract class AbstractArrowResultChunk {
   }
 
   /**
+   * Returns the start row offset of this chunk in the overall result set.
+   *
+   * @return row offset
+   */
+  public long getStartRowOffset() {
+    return rowOffset;
+  }
+
+  /**
    * Checks if the chunk link is invalid or expired.
    *
    * @return true if link is invalid, false otherwise
@@ -139,6 +154,10 @@ public abstract class AbstractArrowResultChunk {
     setStatus(ChunkStatus.CHUNK_RELEASED);
 
     return true;
+  }
+
+  public ExternalLink getChunkLink() {
+    return chunkLink;
   }
 
   /**
@@ -236,8 +255,12 @@ public abstract class AbstractArrowResultChunk {
       stateMachine.transition(targetStatus);
     } catch (DatabricksParsingException e) {
       LOGGER.warn(
-          "Failed to transition to state [%s] from state [%s] for chunk [%d] and statement [%s]. Stack trace: %s",
-          targetStatus, getStatus(), chunkIndex, statementId, ExceptionUtils.getStackTrace(e));
+          "Failed to transition to state [{}] from state [{}] for chunk [{}] and statement [{}]. Stack trace: {}",
+          targetStatus,
+          getStatus(),
+          chunkIndex,
+          statementId,
+          ExceptionUtils.getStackTrace(e));
     }
   }
 
@@ -274,7 +297,7 @@ public abstract class AbstractArrowResultChunk {
     } catch (InterruptedException e) {
       LOGGER.error(
           e,
-          "Chunk download interrupted for chunk index %s and statement %s",
+          "Chunk download interrupted for chunk index {} and statement {}",
           chunkIndex,
           statementId);
       Thread.currentThread().interrupt();
@@ -292,11 +315,15 @@ public abstract class AbstractArrowResultChunk {
    */
   protected void initializeData(InputStream inputStream)
       throws DatabricksSQLException, IOException {
-    LOGGER.debug("Parsing data for chunk index %s and statement %s", chunkIndex, statementId);
+    LOGGER.debug("Parsing data for chunk index {} and statement {}", chunkIndex, statementId);
     ArrowData arrowData = getRecordBatchList(inputStream, rootAllocator, statementId, chunkIndex);
     recordBatchList = arrowData.getValueVectors();
     arrowMetadata = arrowData.getMetadata();
-    LOGGER.debug("Data parsed for chunk index %s and statement %s", chunkIndex, statementId);
+    LOGGER.debug(
+        "Data parsed for chunk index {} and statement {}. Row count: {}",
+        chunkIndex,
+        statementId,
+        arrowData.getRowCount());
     setStatus(ChunkStatus.PROCESSING_SUCCEEDED);
   }
 
@@ -316,10 +343,12 @@ public abstract class AbstractArrowResultChunk {
       throws IOException {
     List<List<ValueVector>> recordBatchList = new ArrayList<>();
     List<String> metadata = new ArrayList<>();
+    long rowCount = 0L;
     try (ArrowStreamReader arrowStreamReader = new ArrowStreamReader(inputStream, rootAllocator)) {
       VectorSchemaRoot vectorSchemaRoot = arrowStreamReader.getVectorSchemaRoot();
       boolean fetchedMetadata = false;
       while (arrowStreamReader.loadNextBatch()) {
+        rowCount += vectorSchemaRoot.getRowCount();
         if (!fetchedMetadata) {
           metadata = getMetadataInformationFromSchemaRoot(vectorSchemaRoot);
           fetchedMetadata = true;
@@ -331,7 +360,7 @@ public abstract class AbstractArrowResultChunk {
       // release resources if thread is interrupted when reading arrow data
       LOGGER.error(
           e,
-          "Data parsing interrupted for chunk index [%s] and statement [%s]. Error [%s]",
+          "Data parsing interrupted for chunk index [{}] and statement [{}]. Error [{}]",
           chunkIndex,
           statementId,
           e.getMessage());
@@ -343,7 +372,7 @@ public abstract class AbstractArrowResultChunk {
       throw e;
     }
 
-    return new ArrowData(recordBatchList, metadata);
+    return new ArrowData(recordBatchList, metadata, rowCount);
   }
 
   private List<String> getMetadataInformationFromSchemaRoot(VectorSchemaRoot vectorSchemaRoot) {
@@ -374,8 +403,13 @@ public abstract class AbstractArrowResultChunk {
     long initReservation = rootAllocator.getInitReservation();
 
     LOGGER.debug(
-        "Chunk allocator stats Log - Event: %s, Chunk Index: %s, Allocated Memory: %s, Peak Memory: %s, Headroom: %s, Init Reservation: %s",
-        event, chunkIndex, allocatedMemory, peakMemory, headRoom, initReservation);
+        "Chunk allocator stats Log - Event: {}, Chunk Index: {}, Allocated Memory: {}, Peak Memory: {}, Headroom: {}, Init Reservation: {}",
+        event,
+        chunkIndex,
+        allocatedMemory,
+        peakMemory,
+        headRoom,
+        initReservation);
   }
 
   /** Releases all Arrow-related resources and clears the record batch list. */

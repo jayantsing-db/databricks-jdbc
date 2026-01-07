@@ -87,7 +87,7 @@ public class DatabricksConnection implements IDatabricksConnection, IDatabricksC
   }
 
   @Override
-  public Statement createStatement() {
+  public Statement createStatement() throws SQLException {
     LOGGER.debug("public Statement createStatement()");
     DatabricksStatement statement = new DatabricksStatement(this);
     statementSet.add(statement);
@@ -95,7 +95,7 @@ public class DatabricksConnection implements IDatabricksConnection, IDatabricksC
   }
 
   @Override
-  public PreparedStatement prepareStatement(String sql) {
+  public PreparedStatement prepareStatement(String sql) throws SQLException {
     LOGGER.debug(
         String.format("public PreparedStatement prepareStatement(String sql = {%s})", sql));
     DatabricksPreparedStatement statement = new DatabricksPreparedStatement(this, sql);
@@ -177,6 +177,12 @@ public class DatabricksConnection implements IDatabricksConnection, IDatabricksC
       LOGGER.warn(
           "ignoreTransactions flag is set - setAutoCommit is no-op (deprecated behavior). "
               + "Please remove this flag to enable transaction support.");
+      return;
+    }
+
+    // Skip server round-trip if using cached values and already in the requested state
+    if (!connectionContext.getFetchAutoCommitFromServer() && getAutoCommit() == autoCommit) {
+      LOGGER.debug("AutoCommit already set to {}, skipping server call", autoCommit);
       return;
     }
 
@@ -446,7 +452,7 @@ public class DatabricksConnection implements IDatabricksConnection, IDatabricksC
       return;
     }
     Statement statement = this.createStatement();
-    statement.execute("SET CATALOG " + catalog);
+    statement.execute("SET CATALOG `" + catalog + "`");
     this.session.setCatalog(catalog);
   }
 
@@ -811,7 +817,7 @@ public class DatabricksConnection implements IDatabricksConnection, IDatabricksC
   @Override
   public void setSchema(String schema) throws SQLException {
     Statement statement = this.createStatement();
-    statement.execute("USE SCHEMA " + schema);
+    statement.execute("USE SCHEMA `" + schema + "`");
     session.setSchema(schema);
   }
 
