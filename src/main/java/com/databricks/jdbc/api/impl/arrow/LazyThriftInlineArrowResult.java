@@ -93,18 +93,22 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
   @Override
   public Object getObject(int columnIndex) throws DatabricksSQLException {
     if (isClosed) {
+      LOGGER.warn("Attempted to get object from closed result");
       throw new DatabricksSQLException(
           "Result is already closed", DatabricksDriverErrorCode.STATEMENT_CLOSED);
     }
     if (globalRowIndex == -1) {
+      LOGGER.warn("Attempted to get object before calling next()");
       throw new DatabricksSQLException(
           "Cursor is before first row", DatabricksDriverErrorCode.INVALID_STATE);
     }
     if (currentChunkIterator == null) {
+      LOGGER.warn("No current chunk available when getting object");
       throw new DatabricksSQLException(
           "No current chunk available", DatabricksDriverErrorCode.INVALID_STATE);
     }
     if (columnIndex < 0 || columnIndex >= columnInfos.size()) {
+      LOGGER.warn("Column index {} out of bounds (size: {})", columnIndex, columnInfos.size());
       throw new DatabricksSQLException(
           "Column index out of bounds " + columnIndex, DatabricksDriverErrorCode.INVALID_STATE);
     }
@@ -261,6 +265,12 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
           "Loaded arrow chunk with {} rows, total fetched: {}", rowCount, totalRowsFetched);
     } catch (DatabricksParsingException e) {
       LOGGER.error("Failed to load current chunk: {}", e.getMessage());
+      // Clean up any partially loaded chunk to prevent memory leaks
+      if (currentChunk != null) {
+        currentChunk.releaseChunk();
+        currentChunk = null;
+      }
+      currentChunkIterator = null;
       hasReachedEnd = true;
       throw new DatabricksSQLException(
           "Failed to process arrow data", DatabricksDriverErrorCode.INLINE_CHUNK_PARSING_ERROR);
@@ -410,7 +420,7 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
    *
    * @return the total number of rows fetched from the server
    */
-  public long getTotalRowsFetched() {
+  long getTotalRowsFetched() {
     return totalRowsFetched;
   }
 
@@ -419,7 +429,7 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
    *
    * @return true if all data has been fetched (either reached end or maxRows limit)
    */
-  public boolean isCompletelyFetched() {
+  boolean isCompletelyFetched() {
     return hasReachedEnd || !currentResponse.hasMoreRows;
   }
 }
