@@ -245,6 +245,19 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
     return 0;
   }
 
+  /**
+   * Gets the Arrow metadata for the current chunk.
+   *
+   * @return list of arrow metadata strings, or null if no chunk is loaded
+   * @throws DatabricksSQLException if an error occurs
+   */
+  public List<String> getArrowMetadata() throws DatabricksSQLException {
+    if (currentChunk == null) {
+      return null;
+    }
+    return currentChunk.getArrowMetadata();
+  }
+
   private void loadCurrentChunk() throws DatabricksSQLException {
     try {
       ByteArrayInputStream byteStream = createArrowByteStream(currentResponse);
