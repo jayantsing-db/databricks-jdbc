@@ -92,6 +92,27 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
    */
   @Override
   public Object getObject(int columnIndex) throws DatabricksSQLException {
+    validateGetObjectState(columnIndex);
+
+    ColumnInfo columnInfo = columnInfos.get(columnIndex);
+    ColumnInfoTypeName requiredType = columnInfo.getTypeName();
+    String arrowMetadata = currentChunkIterator.getType(columnIndex);
+    if (arrowMetadata == null) {
+      arrowMetadata = columnInfo.getTypeText();
+    }
+
+    return ArrowStreamResult.getObjectWithComplexTypeHandling(
+        session, currentChunkIterator, columnIndex, requiredType, arrowMetadata, columnInfo);
+  }
+
+  /**
+   * Validates the state before getting an object at the specified column index.
+   *
+   * @param columnIndex the zero-based column index to validate
+   * @throws DatabricksSQLException if the result is closed, cursor is invalid, or column index is
+   *     out of bounds
+   */
+  private void validateGetObjectState(int columnIndex) throws DatabricksSQLException {
     if (isClosed) {
       LOGGER.warn("Attempted to get object from closed result");
       throw new DatabricksSQLException(
@@ -112,16 +133,6 @@ public class LazyThriftInlineArrowResult implements IExecutionResult {
       throw new DatabricksSQLException(
           "Column index out of bounds " + columnIndex, DatabricksDriverErrorCode.INVALID_STATE);
     }
-
-    ColumnInfo columnInfo = columnInfos.get(columnIndex);
-    ColumnInfoTypeName requiredType = columnInfo.getTypeName();
-    String arrowMetadata = currentChunkIterator.getType(columnIndex);
-    if (arrowMetadata == null) {
-      arrowMetadata = columnInfo.getTypeText();
-    }
-
-    return ArrowStreamResult.getObjectWithComplexTypeHandling(
-        session, currentChunkIterator, columnIndex, requiredType, arrowMetadata, columnInfo);
   }
 
   /**
