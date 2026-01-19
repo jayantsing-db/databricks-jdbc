@@ -5,6 +5,7 @@
 ### Added
 
 ### Updated
+- Implemented lazy loading for inline Arrow results, fetching arrow batches on demand instead of all at once. This improves memory usage and initial response time for large result sets when using the Thrift protocol with Arrow format.
 
 ### Fixed
 
