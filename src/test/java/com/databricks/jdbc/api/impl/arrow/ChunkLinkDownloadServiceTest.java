@@ -14,6 +14,7 @@ import com.databricks.jdbc.exception.DatabricksValidationException;
 import com.databricks.jdbc.model.core.ChunkLinkFetchResult;
 import com.databricks.jdbc.model.core.ExternalLink;
 import com.databricks.jdbc.model.telemetry.enums.DatabricksDriverErrorCode;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -48,11 +49,12 @@ class ChunkLinkDownloadServiceTest {
   @BeforeEach
   void setUp() {
     when(mockSession.getConnectionContext()).thenReturn(mock(IDatabricksConnectionContext.class));
+    lenient().when(mockChunkMap.get(anyLong())).thenReturn(null);
   }
 
   @Test
   void testGetLinkForChunk_Success()
-      throws DatabricksSQLException, InterruptedException, ExecutionException, TimeoutException {
+      throws SQLException, InterruptedException, ExecutionException, TimeoutException {
     when(mockSession.getDatabricksClient()).thenReturn(mockClient);
 
     // Mock the response to link requests
@@ -104,7 +106,7 @@ class ChunkLinkDownloadServiceTest {
 
   @Test
   void testGetLinkForChunk_ClientError()
-      throws DatabricksSQLException, ExecutionException, InterruptedException {
+      throws SQLException, ExecutionException, InterruptedException {
     long chunkIndex = 1L;
     DatabricksSQLException expectedError =
         new DatabricksSQLException("Test error", DatabricksDriverErrorCode.INVALID_STATE);
@@ -126,7 +128,7 @@ class ChunkLinkDownloadServiceTest {
   }
 
   @Test
-  void testAutoTriggerForSEAClient() throws DatabricksSQLException, InterruptedException {
+  void testAutoTriggerForSEAClient() throws SQLException, InterruptedException {
     when(mockSession.getDatabricksClient()).thenReturn(mockClient);
     // Mock the response to link requests
     when(mockClient.getResultChunks(eq(mockStatementId), eq(1L), anyLong()))
@@ -148,7 +150,7 @@ class ChunkLinkDownloadServiceTest {
 
   @Test
   void testHandleExpiredLinks()
-      throws DatabricksSQLException, ExecutionException, InterruptedException, TimeoutException {
+      throws SQLException, ExecutionException, InterruptedException, TimeoutException {
     when(mockSession.getConnectionContext().getClientType()).thenReturn(DatabricksClientType.SEA);
     // Create an expired link for chunk index 1
     ExternalLink expiredLinkForChunkIndex_1 =
@@ -188,7 +190,7 @@ class ChunkLinkDownloadServiceTest {
 
   @Test
   void testBatchDownloadChaining()
-      throws DatabricksSQLException, ExecutionException, InterruptedException, TimeoutException {
+      throws SQLException, ExecutionException, InterruptedException, TimeoutException {
     // Use a far future date to ensure links are never considered expired
     String farFutureExpiration = Instant.now().plus(10, ChronoUnit.MINUTES).toString();
 
@@ -256,6 +258,66 @@ class ChunkLinkDownloadServiceTest {
     verify(mockClient, times(1)).getResultChunks(mockStatementId, 3L, 0L);
     // Verify the request for third batch
     verify(mockClient, times(1)).getResultChunks(mockStatementId, 5L, 0L);
+  }
+
+  @Test
+  void testUpfrontFetchedLinks_FuturesCompletedInConstructor()
+      throws ExecutionException, InterruptedException, TimeoutException {
+    when(mockSession.getConnectionContext().getClientType())
+        .thenReturn(DatabricksClientType.THRIFT);
+
+    // Create links for upfront-fetched chunks
+    ExternalLink link0 =
+        createExternalLink("url-0", 0L, Collections.emptyMap(), "2025-02-16T00:00:00Z");
+    ExternalLink link1 =
+        createExternalLink("url-1", 1L, Collections.emptyMap(), "2025-02-16T00:00:00Z");
+    ExternalLink link2 =
+        createExternalLink("url-2", 2L, Collections.emptyMap(), "2025-02-16T00:00:00Z");
+
+    // Create mock chunks with links already set
+    ArrowResultChunk mockChunk0 = mock(ArrowResultChunk.class);
+    ArrowResultChunk mockChunk1 = mock(ArrowResultChunk.class);
+    ArrowResultChunk mockChunk2 = mock(ArrowResultChunk.class);
+
+    ArrowResultChunk mockChunk3 = mock(ArrowResultChunk.class);
+    ArrowResultChunk mockChunk4 = mock(ArrowResultChunk.class);
+
+    when(mockChunk0.getChunkLink()).thenReturn(link0);
+    when(mockChunk1.getChunkLink()).thenReturn(link1);
+    when(mockChunk2.getChunkLink()).thenReturn(link2);
+
+    when(mockChunkMap.get(0L)).thenReturn(mockChunk0);
+    when(mockChunkMap.get(1L)).thenReturn(mockChunk1);
+    when(mockChunkMap.get(2L)).thenReturn(mockChunk2);
+    lenient().when(mockChunkMap.get(3L)).thenReturn(mockChunk3);
+    lenient().when(mockChunkMap.get(4L)).thenReturn(mockChunk4);
+
+    // Create service with nextBatchStartIndex = 3 (meaning chunks 0, 1, 2 were upfront-fetched)
+    long nextBatchStartIndex = 3L;
+    ChunkLinkDownloadService<ArrowResultChunk> service =
+        new ChunkLinkDownloadService<>(
+            mockSession, mockStatementId, TOTAL_CHUNKS, mockChunkMap, nextBatchStartIndex);
+
+    // Verify that futures for chunks 0, 1, 2 are already completed
+    CompletableFuture<ExternalLink> future0 = service.getLinkFutureForTest(0L);
+    CompletableFuture<ExternalLink> future1 = service.getLinkFutureForTest(1L);
+    CompletableFuture<ExternalLink> future2 = service.getLinkFutureForTest(2L);
+
+    assertTrue(future0.isDone(), "Future for chunk 0 should be completed");
+    assertTrue(future1.isDone(), "Future for chunk 1 should be completed");
+    assertTrue(future2.isDone(), "Future for chunk 2 should be completed");
+
+    // Verify the futures contain the correct links
+    assertEquals(link0, future0.get(100, TimeUnit.MILLISECONDS));
+    assertEquals(link1, future1.get(100, TimeUnit.MILLISECONDS));
+    assertEquals(link2, future2.get(100, TimeUnit.MILLISECONDS));
+
+    // Verify that futures for chunks 3, 4 are not completed
+    CompletableFuture<ExternalLink> future3 = service.getLinkFutureForTest(3L);
+    CompletableFuture<ExternalLink> future4 = service.getLinkFutureForTest(4L);
+
+    assertFalse(future3.isDone(), "Future for chunk 3 should not be completed");
+    assertFalse(future4.isDone(), "Future for chunk 4 should not be completed");
   }
 
   private ExternalLink createExternalLink(

@@ -7,13 +7,13 @@ import static com.databricks.jdbc.common.util.DatabricksThriftUtil.*;
 import static com.databricks.jdbc.common.util.DatabricksTypeUtil.DECIMAL;
 import static com.databricks.jdbc.common.util.DatabricksTypeUtil.getDecimalTypeString;
 import static com.databricks.jdbc.dbclient.impl.sqlexec.CommandName.LIST_FUNCTIONS;
-import static com.databricks.jdbc.dbclient.impl.sqlexec.ResultConstants.TYPE_INFO_RESULT;
 
 import com.databricks.jdbc.api.impl.*;
 import com.databricks.jdbc.api.internal.IDatabricksConnectionContext;
 import com.databricks.jdbc.api.internal.IDatabricksSession;
 import com.databricks.jdbc.api.internal.IDatabricksStatementInternal;
 import com.databricks.jdbc.common.IDatabricksComputeResource;
+import com.databricks.jdbc.common.MetadataOperationType;
 import com.databricks.jdbc.common.StatementType;
 import com.databricks.jdbc.common.util.DatabricksThreadContextHolder;
 import com.databricks.jdbc.common.util.DriverUtil;
@@ -93,7 +93,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       String catalog,
       String schema,
       Map<String, String> sessionConf)
-      throws DatabricksSQLException {
+      throws SQLException {
     LOGGER.debug(
         String.format(
             "public Session createSession(Compute cluster = {%s}, String catalog = {%s}, String schema = {%s}, Map<String, String> sessionConf = {%s})",
@@ -131,7 +131,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
   }
 
   @Override
-  public void deleteSession(ImmutableSessionInfo sessionInfo) throws DatabricksSQLException {
+  public void deleteSession(ImmutableSessionInfo sessionInfo) throws SQLException {
     LOGGER.debug(
         String.format(
             "public void deleteSession(Session session = {%s}))", sessionInfo.toString()));
@@ -150,9 +150,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       Map<Integer, ImmutableSqlParameter> parameters,
       StatementType statementType,
       IDatabricksSession session,
-      IDatabricksStatementInternal parentStatement)
+      IDatabricksStatementInternal parentStatement,
+      MetadataOperationType metadataOperationType)
       throws SQLException {
-
+    // Note: metadataOperationType is ignored in Thrift mode as metadata operations use native
+    // Thrift RPCs (GetTables, GetColumns, etc.) which are already logged correctly.
     LOGGER.debug(
         String.format(
             "public DatabricksResultSet executeStatement(String sql = {%s}, Compute cluster = {%s}, Map<Integer, ImmutableSqlParameter> parameters = {%s}, StatementType statementType = {%s}, IDatabricksSession session)",
@@ -232,7 +234,8 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       request.setCanDecompressLZ4Result(true);
     }
     if (ProtocolFeatureUtil.supportsCloudFetch(serverProtocolVersion)) {
-      request.setCanDownloadResult(true);
+      // Use EnableQueryResultDownload param to control CloudFetch vs inline Arrow
+      request.setCanDownloadResult(this.connectionContext.isCloudFetchEnabled());
     }
     if (ProtocolFeatureUtil.supportsAdvancedArrowTypes(serverProtocolVersion)) {
       arrowNativeTypes
@@ -302,8 +305,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
 
   @Override
   public ChunkLinkFetchResult getResultChunks(
-      StatementId statementId, long chunkIndex, long chunkStartRowOffset)
-      throws DatabricksSQLException {
+      StatementId statementId, long chunkIndex, long chunkStartRowOffset) throws SQLException {
     // Thrift uses rowOffset with FETCH_ABSOLUTE; chunkIndex is used for link metadata
     LOGGER.debug(
         "getResultChunks(statementId={}, chunkIndex={}, rowOffset={}) using Thrift client",
@@ -386,7 +388,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
   @Override
   public DatabricksResultSet listTypeInfo(IDatabricksSession session) {
     LOGGER.debug("public ResultSet getTypeInfo()");
-    return TYPE_INFO_RESULT;
+    return metadataResultSetBuilder.getTypeInfoResult();
   }
 
   @Override
@@ -399,8 +401,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
     // If multiple catalog support is disabled, return only the current catalog
     if (!isMultipleCatalogSupportEnabled()) {
       String currentCatalog = session.getCurrentCatalog();
-      if (currentCatalog == null || currentCatalog.isEmpty()) {
-        currentCatalog = "";
+      if (currentCatalog == null) {
+        currentCatalog = "spark";
+        LOGGER.debug(
+            "Current catalog is null when multiple catalog support is disabled. Using default catalog: {}",
+            currentCatalog);
       }
       List<List<Object>> singleCatalogRows = new ArrayList<>();
       List<Object> catalogRow = new ArrayList<>();
@@ -428,6 +433,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             "Fetching schemas using Thrift client. Session {%s}, catalog {%s}, schemaNamePattern {%s}",
             session.toString(), catalog, schemaNamePattern);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getSchemasResult(new ArrayList<>());
+    }
+
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     TGetSchemasReq request =
         new TGetSchemasReq()
@@ -457,6 +467,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             "Fetching tables using Thrift client. Session {%s}, catalog {%s}, schemaNamePattern {%s}, tableNamePattern {%s}",
             session.toString(), catalog, schemaNamePattern, tableNamePattern);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getTablesResult(catalog, tableTypes, new ArrayList<>());
+    }
+
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     TGetTablesReq request =
         new TGetTablesReq()
@@ -491,12 +506,17 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
       String schemaNamePattern,
       String tableNamePattern,
       String columnNamePattern)
-      throws DatabricksSQLException {
+      throws SQLException {
     String context =
         String.format(
             "Fetching columns using Thrift client. Session {%s}, catalog {%s}, schemaNamePattern {%s}, tableNamePattern {%s}, columnNamePattern {%s}",
             session.toString(), catalog, schemaNamePattern, tableNamePattern, columnNamePattern);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getColumnsResult(new ArrayList<>());
+    }
+
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     TGetColumnsReq request =
         new TGetColumnsReq()
@@ -526,6 +546,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             session.toString(), catalog, schemaNamePattern, functionNamePattern);
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getFunctionsResult(catalog, new ArrayList<>());
+    }
+
     if (connectionContext.enableShowCommandsForGetFunctions()) {
       // Return empty result set if catalog is null for SQL command path
       if (catalog == null) {
@@ -552,6 +577,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
               Collections.emptyMap(),
               StatementType.METADATA,
               session,
+              null,
               null)) {
         return metadataResultSetBuilder.getFunctionsResult(rs, catalog);
       }
@@ -578,6 +604,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             "Fetching primary keys using Thrift client. session {%s}, catalog {%s}, schema {%s}, table {%s}",
             session.toString(), catalog, schema, table);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getPrimaryKeysResult(new ArrayList<>());
+    }
+
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     TGetPrimaryKeysReq request =
         new TGetPrimaryKeysReq()
@@ -601,6 +632,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             "Fetching imported keys using Thrift client for session {%s}, catalog {%s}, schema {%s}, table {%s}",
             session.toString(), catalog, schema, table);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getImportedKeys(new ArrayList<>());
+    }
+
     DatabricksThreadContextHolder.setSessionId(session.getSessionId());
     // GetImportedKeys is implemented using GetCrossReferences
     // When only foreign table name is provided, we get imported keys
@@ -625,6 +661,11 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             "Fetching exported keys using Thrift client for session {%s}, catalog {%s}, schema {%s}, table {%s}",
             session.toString(), catalog, schema, table);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, null, session)) {
+      return metadataResultSetBuilder.getExportedKeys(new ArrayList<>());
+    }
+
     // GetImportedKeys is implemented using GetCrossReferences
     // When only parent table name is provided, we get exported keys
     TGetCrossReferenceReq request =
@@ -661,6 +702,12 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
             foreignSchema,
             foreignTable);
     LOGGER.debug(context);
+
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(parentCatalog, null, session)
+        || !metadataResultSetBuilder.shouldAllowCatalogAccess(foreignCatalog, null, session)) {
+      return metadataResultSetBuilder.getCrossRefsResult(new ArrayList<>());
+    }
+
     TGetCrossReferenceReq request =
         new TGetCrossReferenceReq()
             .setSessionHandle(Objects.requireNonNull(session.getSessionInfo()).sessionHandle())
@@ -679,7 +726,7 @@ public class DatabricksThriftServiceClient implements IDatabricksClient, IDatabr
   }
 
   public TFetchResultsResp getMoreResults(IDatabricksStatementInternal parentStatement)
-      throws DatabricksSQLException {
+      throws SQLException {
     return thriftAccessor.getMoreResults(parentStatement);
   }
 

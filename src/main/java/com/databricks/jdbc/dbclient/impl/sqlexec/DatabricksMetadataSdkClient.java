@@ -1,13 +1,11 @@
 package com.databricks.jdbc.dbclient.impl.sqlexec;
 
 import static com.databricks.jdbc.common.MetadataResultConstants.*;
-import static com.databricks.jdbc.dbclient.impl.common.CommandConstants.GET_TABLES_STATEMENT_ID;
 import static com.databricks.jdbc.dbclient.impl.common.CommandConstants.METADATA_STATEMENT_ID;
-import static com.databricks.jdbc.dbclient.impl.sqlexec.ResultConstants.TYPE_INFO_RESULT;
 
 import com.databricks.jdbc.api.impl.DatabricksResultSet;
 import com.databricks.jdbc.api.internal.IDatabricksSession;
-import com.databricks.jdbc.common.MetadataResultConstants;
+import com.databricks.jdbc.common.MetadataOperationType;
 import com.databricks.jdbc.common.StatementType;
 import com.databricks.jdbc.common.util.JdbcThreadUtils;
 import com.databricks.jdbc.common.util.WildcardUtil;
@@ -46,7 +44,7 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
   @Override
   public DatabricksResultSet listTypeInfo(IDatabricksSession session) {
     LOGGER.debug("public ResultSet getTypeInfo()");
-    return TYPE_INFO_RESULT;
+    return metadataResultSetBuilder.getTypeInfoResult();
   }
 
   @Override
@@ -54,24 +52,35 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
     // If multiple catalog support is disabled, return only the current catalog
     if (isMultipleCatalogSupportDisabled()) {
       String currentCatalog = session.getCurrentCatalog();
-      if (currentCatalog == null) {
-        currentCatalog = "";
+      if (currentCatalog == null || currentCatalog.isEmpty()) {
+        currentCatalog = "spark";
+        LOGGER.debug(
+            "Current catalog is null or empty when multiple catalog support is disabled. Using default catalog: {}",
+            currentCatalog);
       }
       String SQL = String.format("SELECT '%s' AS catalog", currentCatalog);
       LOGGER.debug("SQL command to fetch catalogs: {}", SQL);
-      return metadataResultSetBuilder.getCatalogsResult(getResultSet(SQL, session));
+      return metadataResultSetBuilder.getCatalogsResult(
+          getResultSet(SQL, session, MetadataOperationType.GET_CATALOGS));
     }
 
     CommandBuilder commandBuilder = new CommandBuilder(session);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_CATALOGS);
     LOGGER.debug("SQL command to fetch catalogs: {}", SQL);
-    return metadataResultSetBuilder.getCatalogsResult(getResultSet(SQL, session));
+    return metadataResultSetBuilder.getCatalogsResult(
+        getResultSet(SQL, session, MetadataOperationType.GET_CATALOGS));
   }
 
   @Override
   public DatabricksResultSet listSchemas(
       IDatabricksSession session, String catalog, String schemaNamePattern) throws SQLException {
-    catalog = autoFillCatalog(catalog, session);
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getSchemasResult(new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
 
     // Return empty result set if catalog is an empty string
     if (catalog != null && catalog.isEmpty()) {
@@ -88,7 +97,8 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
     String SQL = commandBuilder.getSQLString(CommandName.LIST_SCHEMAS);
     LOGGER.debug("SQL command to fetch schemas: {}", SQL);
     try {
-      return metadataResultSetBuilder.getSchemasResult(getResultSet(SQL, session), catalog);
+      return metadataResultSetBuilder.getSchemasResult(
+          getResultSet(SQL, session, MetadataOperationType.GET_SCHEMAS), catalog);
     } catch (SQLException e) {
       if (WildcardUtil.isNullOrWildcard(catalog)
           && PARSE_SYNTAX_ERROR_SQL_STATE.equals(e.getSQLState())) {
@@ -111,11 +121,19 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
       String tableNamePattern,
       String[] tableTypes)
       throws SQLException {
-    catalog = autoFillCatalog(catalog, session);
     String[] validatedTableTypes =
         Optional.ofNullable(tableTypes)
             .filter(types -> types.length > 0)
             .orElse(DEFAULT_TABLE_TYPES);
+
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getTablesResult(
+          catalog, validatedTableTypes, new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
     CommandBuilder commandBuilder =
         new CommandBuilder(catalog, session)
             .setSchemaPattern(schemaNamePattern)
@@ -125,18 +143,15 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
     LOGGER.debug(String.format("SQL command to fetch tables: {%s}", SQL));
     try {
       return metadataResultSetBuilder.getTablesResult(
-          getResultSet(SQL, session), validatedTableTypes);
+          getResultSet(SQL, session, MetadataOperationType.GET_TABLES), validatedTableTypes);
     } catch (SQLException e) {
       if (PARSE_SYNTAX_ERROR_SQL_STATE.equals(e.getSQLState())
           && (catalog == null || catalog.equals("*") || catalog.equals("%"))) {
         // Gracefully handles the case where an older DBSQL version doesn't support all catalogs in
         // the SHOW TABLES command.
         LOGGER.debug("SQL command failed with syntax error. Returning empty result set.");
-        return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-            MetadataResultConstants.TABLE_COLUMNS,
-            new ArrayList<>(),
-            GET_TABLES_STATEMENT_ID,
-            com.databricks.jdbc.common.CommandName.LIST_TABLES);
+        return metadataResultSetBuilder.getTablesResult(
+            catalog, validatedTableTypes, new ArrayList<>());
       } else {
         throw e;
       }
@@ -157,7 +172,13 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
       String tableNamePattern,
       String columnNamePattern)
       throws SQLException {
-    catalog = autoFillCatalog(catalog, session);
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getColumnsResult(new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
 
     // Fetch columns from all catalogs if catalog is null
     if (catalog == null) {
@@ -173,7 +194,8 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
             .setColumnPattern(columnNamePattern);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_COLUMNS);
     LOGGER.debug("SQL command to fetch columns: {}", SQL);
-    return metadataResultSetBuilder.getColumnsResult(getResultSet(SQL, session));
+    return metadataResultSetBuilder.getColumnsResult(
+        getResultSet(SQL, session, MetadataOperationType.GET_COLUMNS));
   }
 
   @Override
@@ -183,7 +205,13 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
       String schemaNamePattern,
       String functionNamePattern)
       throws SQLException {
-    catalog = autoFillCatalog(catalog, session);
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getFunctionsResult(catalog, new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
 
     // Fetch current catalog if catalog is null
     if (catalog == null) {
@@ -206,13 +234,20 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
             .setFunctionPattern(functionNamePattern);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_FUNCTIONS);
     LOGGER.debug("SQL command to fetch functions: {}", SQL);
-    return metadataResultSetBuilder.getFunctionsResult(getResultSet(SQL, session), catalog);
+    return metadataResultSetBuilder.getFunctionsResult(
+        getResultSet(SQL, session, MetadataOperationType.GET_FUNCTIONS), catalog);
   }
 
   @Override
   public DatabricksResultSet listPrimaryKeys(
       IDatabricksSession session, String catalog, String schema, String table) throws SQLException {
-    catalog = autoFillCatalog(catalog, session);
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getPrimaryKeysResult(new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
 
     // Return empty result set if catalog, schema, or table is null
     if (catalog == null || schema == null || table == null) {
@@ -222,7 +257,7 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
           schema,
           table);
       return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-          MetadataResultConstants.PRIMARY_KEYS_COLUMNS,
+          PRIMARY_KEYS_COLUMNS,
           new ArrayList<>(),
           METADATA_STATEMENT_ID,
           com.databricks.jdbc.common.CommandName.LIST_PRIMARY_KEYS);
@@ -232,14 +267,22 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
         new CommandBuilder(catalog, session).setSchema(schema).setTable(table);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_PRIMARY_KEYS);
     LOGGER.debug("SQL command to fetch primary keys: {}", SQL);
-    return metadataResultSetBuilder.getPrimaryKeysResult(getResultSet(SQL, session));
+    return metadataResultSetBuilder.getPrimaryKeysResult(
+        getResultSet(SQL, session, MetadataOperationType.GET_PRIMARY_KEYS));
   }
 
   @Override
   public DatabricksResultSet listImportedKeys(
       IDatabricksSession session, String catalog, String schema, String table) throws SQLException {
     LOGGER.debug("public ResultSet listImportedKeys() using SDK");
-    catalog = autoFillCatalog(catalog, session);
+
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getImportedKeys(new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
 
     // Return empty result set if catalog, schema, or table is null
     if (catalog == null || schema == null || table == null) {
@@ -249,7 +292,7 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
           schema,
           table);
       return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-          MetadataResultConstants.IMPORTED_KEYS_COLUMNS,
+          IMPORTED_KEYS_COLUMNS,
           new ArrayList<>(),
           METADATA_STATEMENT_ID,
           com.databricks.jdbc.common.CommandName.GET_IMPORTED_KEYS);
@@ -259,17 +302,14 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
         new CommandBuilder(catalog, session).setSchema(schema).setTable(table);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_FOREIGN_KEYS);
     try {
-      return metadataResultSetBuilder.getImportedKeysResult(getResultSet(SQL, session));
+      return metadataResultSetBuilder.getImportedKeysResult(
+          getResultSet(SQL, session, MetadataOperationType.GET_CROSS_REFERENCE));
     } catch (SQLException e) {
       if (PARSE_SYNTAX_ERROR_SQL_STATE.equals(e.getSQLState())) {
         // This is a workaround for the issue where the SQL command fails with "syntax error at or
         // near "foreign""
         LOGGER.debug("SQL command failed with syntax error. Returning empty result set.");
-        return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-            MetadataResultConstants.IMPORTED_KEYS_COLUMNS,
-            new ArrayList<>(),
-            METADATA_STATEMENT_ID,
-            com.databricks.jdbc.common.CommandName.GET_IMPORTED_KEYS);
+        return metadataResultSetBuilder.getImportedKeys(new ArrayList<>());
       } else {
         throw e;
       }
@@ -280,13 +320,17 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
   public DatabricksResultSet listExportedKeys(
       IDatabricksSession session, String catalog, String schema, String table) throws SQLException {
     LOGGER.debug("public ResultSet listExportedKeys() using SDK");
-    catalog = autoFillCatalog(catalog, session);
+
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(catalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getExportedKeys(new ArrayList<>());
+    }
+
+    catalog = autoFillCatalog(catalog, currentCatalog);
+
     // Exported keys not tracked in DBSQL. Returning empty result set
-    return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-        MetadataResultConstants.EXPORTED_KEYS_COLUMNS,
-        new ArrayList<>(),
-        METADATA_STATEMENT_ID,
-        com.databricks.jdbc.common.CommandName.GET_EXPORTED_KEYS);
+    return metadataResultSetBuilder.getExportedKeys(new ArrayList<>());
   }
 
   @Override
@@ -300,23 +344,31 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
       String foreignTable)
       throws SQLException {
     LOGGER.debug("public ResultSet listCrossReferences() using SDK");
+
+    // Only fetch currentCatalog if multiple catalog support is disabled
+    String currentCatalog = isMultipleCatalogSupportDisabled() ? session.getCurrentCatalog() : null;
+    if (!metadataResultSetBuilder.shouldAllowCatalogAccess(parentCatalog, currentCatalog, session)
+        || !metadataResultSetBuilder.shouldAllowCatalogAccess(
+            foreignCatalog, currentCatalog, session)) {
+      return metadataResultSetBuilder.getCrossRefsResult(new ArrayList<>());
+    }
+
     CommandBuilder commandBuilder =
         new CommandBuilder(foreignCatalog, session).setSchema(foreignSchema).setTable(foreignTable);
     String SQL = commandBuilder.getSQLString(CommandName.LIST_FOREIGN_KEYS);
     try {
       return metadataResultSetBuilder.getCrossReferenceKeysResult(
-          getResultSet(SQL, session), parentCatalog, parentSchema, parentTable);
+          getResultSet(SQL, session, MetadataOperationType.GET_CROSS_REFERENCE),
+          parentCatalog,
+          parentSchema,
+          parentTable);
     } catch (SQLException e) {
       if (PARSE_SYNTAX_ERROR_SQL_STATE.equals(e.getSQLState())) {
         // This is a workaround for the issue where the SQL command fails with "syntax error at or
         // near "foreign""
         // This is a known issue in Databricks for older DBSQL versions
         LOGGER.debug("SQL command failed with syntax error. Returning empty result set.");
-        return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-            MetadataResultConstants.CROSS_REFERENCE_COLUMNS,
-            new ArrayList<>(),
-            METADATA_STATEMENT_ID,
-            com.databricks.jdbc.common.CommandName.GET_CROSS_REFERENCE);
+        return metadataResultSetBuilder.getCrossRefsResult(new ArrayList<>());
       } else {
         LOGGER.error(
             e,
@@ -333,15 +385,26 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
         && !sdkClient.getConnectionContext().getEnableMultipleCatalogSupport();
   }
 
-  private String autoFillCatalog(String catalog, IDatabricksSession session) throws SQLException {
-    if (isMultipleCatalogSupportDisabled()) {
-      String currentCatalog = session.getCurrentCatalog();
-      return (currentCatalog != null && !currentCatalog.isEmpty()) ? currentCatalog : "";
+  /**
+   * Auto-fills the catalog parameter if multiple catalog support is disabled and catalog is null.
+   *
+   * @param catalog the catalog parameter to auto-fill
+   * @param currentCatalog the current catalog from the session
+   * @return the auto-filled catalog or the original catalog if no auto-fill is needed
+   */
+  private String autoFillCatalog(String catalog, String currentCatalog) {
+    if (isMultipleCatalogSupportDisabled() && catalog == null) {
+      String result =
+          (currentCatalog != null && !currentCatalog.isEmpty()) ? currentCatalog : "spark";
+      LOGGER.debug(
+          "Auto-filling null catalog with '{}' when multiple catalog support is disabled", result);
+      return result;
     }
     return catalog;
   }
 
-  private DatabricksResultSet getResultSet(String SQL, IDatabricksSession session)
+  private DatabricksResultSet getResultSet(
+      String SQL, IDatabricksSession session, MetadataOperationType metadataOperationType)
       throws SQLException {
     return sdkClient.executeStatement(
         SQL,
@@ -349,7 +412,8 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
         new HashMap<>(),
         StatementType.METADATA,
         session,
-        null /* parentStatement */);
+        null /* parentStatement */,
+        metadataOperationType);
   }
 
   private DatabricksResultSet fetchSchemasAcrossCatalogs(
@@ -446,7 +510,7 @@ public class DatabricksMetadataSdkClient implements IDatabricksMetadataClient {
 
     // Convert combined data into a result set
     return metadataResultSetBuilder.getResultSetWithGivenRowsAndColumns(
-        MetadataResultConstants.COLUMN_COLUMNS,
+        COLUMN_COLUMNS,
         columnRows,
         METADATA_STATEMENT_ID,
         com.databricks.jdbc.common.CommandName.LIST_COLUMNS);

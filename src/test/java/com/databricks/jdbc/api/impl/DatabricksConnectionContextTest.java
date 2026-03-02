@@ -61,6 +61,23 @@ class DatabricksConnectionContextTest {
   }
 
   @Test
+  public void testTelemetrySocketTimeoutDefault() throws DatabricksSQLException {
+    DatabricksConnectionContext context =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, properties);
+    // Default is 5 seconds
+    assertEquals(5, context.getTelemetrySocketTimeout());
+  }
+
+  @Test
+  public void testTelemetrySocketTimeoutCustom() throws DatabricksSQLException {
+    String url = TestConstants.VALID_URL_1 + ";TelemetrySocketTimeout=3";
+    DatabricksConnectionContext context =
+        (DatabricksConnectionContext) DatabricksConnectionContext.parse(url, properties);
+    assertEquals(3, context.getTelemetrySocketTimeout());
+  }
+
+  @Test
   public void testParseInvalid() {
     assertThrows(
         DatabricksParsingException.class,
@@ -1209,5 +1226,135 @@ class DatabricksConnectionContextTest {
         (DatabricksConnectionContext)
             DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
     assertFalse(ctx.isTokenFederationEnabled());
+  }
+
+  @Test
+  public void testIsCloudFetchEnabled() throws DatabricksSQLException {
+    // Test default value (should be enabled by default)
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, properties);
+    assertTrue(ctx.isCloudFetchEnabled()); // Default should be true
+
+    // Test via URL parameter - enabled
+    String urlWithCloudFetchEnabled =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:9999/default;httpPath=/sql/1.0/warehouses/999999999;EnableQueryResultDownload=1";
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(urlWithCloudFetchEnabled, properties);
+    assertTrue(ctx.isCloudFetchEnabled());
+
+    // Test via URL parameter - disabled
+    String urlWithCloudFetchDisabled =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:9999/default;httpPath=/sql/1.0/warehouses/999999999;EnableQueryResultDownload=0";
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(urlWithCloudFetchDisabled, properties);
+    assertFalse(ctx.isCloudFetchEnabled());
+
+    // Test via Properties - enabled
+    Properties props = new Properties();
+    props.setProperty("password", "passwd");
+    props.setProperty("EnableQueryResultDownload", "1");
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
+    assertTrue(ctx.isCloudFetchEnabled());
+
+    // Test via Properties - disabled
+    props = new Properties();
+    props.setProperty("password", "passwd");
+    props.setProperty("EnableQueryResultDownload", "0");
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
+    assertFalse(ctx.isCloudFetchEnabled());
+  }
+
+  // ===== Inline Streaming Configuration Tests =====
+
+  @Test
+  public void testIsInlineStreamingEnabledDefault() throws DatabricksSQLException {
+    // Test default value (should be enabled by default - "1")
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, properties);
+    assertTrue(ctx.isInlineStreamingEnabled()); // Default should be true
+  }
+
+  @Test
+  public void testIsInlineStreamingEnabledDisabled() throws DatabricksSQLException {
+    // Test via URL parameter - disabled
+    String urlWithStreamingDisabled =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:9999/default;httpPath=/sql/1.0/warehouses/999999999;EnableInlineStreaming=0";
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(urlWithStreamingDisabled, properties);
+    assertFalse(ctx.isInlineStreamingEnabled());
+
+    // Test via Properties - disabled
+    Properties props = new Properties();
+    props.setProperty("password", "passwd");
+    props.setProperty("EnableInlineStreaming", "0");
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
+    assertFalse(ctx.isInlineStreamingEnabled());
+  }
+
+  @Test
+  public void testGetThriftMaxBatchesInMemoryDefault() throws DatabricksSQLException {
+    // Test default value (should be 3)
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, properties);
+    assertEquals(3, ctx.getThriftMaxBatchesInMemory());
+  }
+
+  @Test
+  public void testGetThriftMaxBatchesInMemoryCustom() throws DatabricksSQLException {
+    // Test custom value via URL
+    String urlWithCustomBatches =
+        "jdbc:databricks://sample-host.18.azuredatabricks.net:9999/default;httpPath=/sql/1.0/warehouses/999999999;ThriftMaxBatchesInMemory=5";
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(urlWithCustomBatches, properties);
+    assertEquals(5, ctx.getThriftMaxBatchesInMemory());
+
+    // Test custom value via Properties
+    Properties props = new Properties();
+    props.setProperty("password", "passwd");
+    props.setProperty("ThriftMaxBatchesInMemory", "10");
+    ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
+    assertEquals(10, ctx.getThriftMaxBatchesInMemory());
+  }
+
+  @Test
+  public void testGetThriftMaxBatchesInMemoryInvalidFallback() throws DatabricksSQLException {
+    // Test invalid value falls back to default (3)
+    Properties props = new Properties();
+    props.setProperty("password", "passwd");
+    props.setProperty("ThriftMaxBatchesInMemory", "invalid");
+    DatabricksConnectionContext ctx =
+        (DatabricksConnectionContext)
+            DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, props);
+    assertEquals(3, ctx.getThriftMaxBatchesInMemory()); // Should fall back to default
+  }
+
+  @Test
+  public void testOAuthWebServerTimeoutDefault() throws DatabricksSQLException {
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(TestConstants.VALID_URL_1, properties);
+    assertEquals(120, connectionContext.getOAuthWebServerTimeout());
+  }
+
+  @Test
+  public void testOAuthWebServerTimeoutCustom() throws DatabricksSQLException {
+    IDatabricksConnectionContext connectionContext =
+        DatabricksConnectionContext.parse(
+            TestConstants.VALID_URL_1 + ";OAuthWebServerTimeout=300", properties);
+    assertEquals(300, connectionContext.getOAuthWebServerTimeout());
   }
 }

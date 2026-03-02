@@ -17,6 +17,8 @@ import com.google.common.util.concurrent.MoreExecutors;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.apache.http.HttpHeaders;
 import org.apache.http.StatusLine;
@@ -42,13 +44,21 @@ public class TelemetryClientTest {
   @Mock StatusLine mockStatusLine;
   @Mock DatabricksConfig databricksConfig;
 
+  private ScheduledExecutorService createMockScheduler() {
+    return mock(ScheduledExecutorService.class);
+  }
+
+  private ScheduledExecutorService createRealScheduler() {
+    return Executors.newSingleThreadScheduledExecutor();
+  }
+
   @Test
   public void testExportEvent() throws Exception {
     try (MockedStatic<DatabricksHttpClientFactory> factoryMocked =
         mockStatic(DatabricksHttpClientFactory.class)) {
       DatabricksHttpClientFactory mockFactory = mock(DatabricksHttpClientFactory.class);
       factoryMocked.when(DatabricksHttpClientFactory::getInstance).thenReturn(mockFactory);
-      when(mockFactory.getClient(any())).thenReturn(mockHttpClient);
+      when(mockFactory.getClient(any(), any())).thenReturn(mockHttpClient);
       when(mockHttpClient.execute(any())).thenReturn(mockHttpResponse);
       when(mockHttpResponse.getStatusLine()).thenReturn(mockStatusLine);
       when(mockStatusLine.getStatusCode()).thenReturn(200);
@@ -59,7 +69,8 @@ public class TelemetryClientTest {
       IDatabricksConnectionContext context =
           DatabricksConnectionContext.parse(JDBC_URL, new Properties());
       TelemetryClient client =
-          new TelemetryClient(context, MoreExecutors.newDirectExecutorService());
+          new TelemetryClient(
+              context, MoreExecutors.newDirectExecutorService(), createMockScheduler());
 
       client.exportEvent(
           new TelemetryFrontendLog(TelemetryLogLevel.ERROR).setFrontendLogEventId("event1"));
@@ -87,7 +98,7 @@ public class TelemetryClientTest {
         mockStatic(DatabricksHttpClientFactory.class)) {
       DatabricksHttpClientFactory mockFactory = mock(DatabricksHttpClientFactory.class);
       factoryMocked.when(DatabricksHttpClientFactory::getInstance).thenReturn(mockFactory);
-      when(mockFactory.getClient(any())).thenReturn(mockHttpClient);
+      when(mockFactory.getClient(any(), any())).thenReturn(mockHttpClient);
       when(mockHttpClient.execute(any())).thenReturn(mockHttpResponse);
       when(mockHttpResponse.getStatusLine()).thenReturn(mockStatusLine);
       when(mockStatusLine.getStatusCode()).thenReturn(200);
@@ -101,7 +112,11 @@ public class TelemetryClientTest {
       IDatabricksConnectionContext context =
           DatabricksConnectionContext.parse(JDBC_URL, new Properties());
       TelemetryClient client =
-          new TelemetryClient(context, MoreExecutors.newDirectExecutorService(), databricksConfig);
+          new TelemetryClient(
+              context,
+              MoreExecutors.newDirectExecutorService(),
+              createMockScheduler(),
+              databricksConfig);
 
       client.exportEvent(
           new TelemetryFrontendLog(TelemetryLogLevel.ERROR).setFrontendLogEventId("event1"));
@@ -134,14 +149,15 @@ public class TelemetryClientTest {
         mockStatic(DatabricksHttpClientFactory.class)) {
       DatabricksHttpClientFactory mockFactory = mock(DatabricksHttpClientFactory.class);
       factoryMocked.when(DatabricksHttpClientFactory::getInstance).thenReturn(mockFactory);
-      when(mockFactory.getClient(any())).thenReturn(mockHttpClient);
+      when(mockFactory.getClient(any(), any())).thenReturn(mockHttpClient);
       when(mockHttpClient.execute(any())).thenReturn(mockHttpResponse);
       when(mockHttpResponse.getStatusLine()).thenReturn(mockStatusLine);
       when(mockStatusLine.getStatusCode()).thenReturn(400);
       IDatabricksConnectionContext context =
           DatabricksConnectionContext.parse(JDBC_URL, new Properties());
       TelemetryClient client =
-          new TelemetryClient(context, MoreExecutors.newDirectExecutorService());
+          new TelemetryClient(
+              context, MoreExecutors.newDirectExecutorService(), createMockScheduler());
 
       client.exportEvent(
           new TelemetryFrontendLog(TelemetryLogLevel.ERROR).setFrontendLogEventId("event1"));
@@ -155,11 +171,12 @@ public class TelemetryClientTest {
 
   @Test
   public void testPeriodicFlushWithAuthenticatedClient() throws Exception {
+    ScheduledExecutorService scheduler = createRealScheduler();
     try (MockedStatic<DatabricksHttpClientFactory> factoryMocked =
         mockStatic(DatabricksHttpClientFactory.class)) {
       DatabricksHttpClientFactory mockFactory = mock(DatabricksHttpClientFactory.class);
       factoryMocked.when(DatabricksHttpClientFactory::getInstance).thenReturn(mockFactory);
-      when(mockFactory.getClient(any())).thenReturn(mockHttpClient);
+      when(mockFactory.getClient(any(), any())).thenReturn(mockHttpClient);
       when(mockHttpClient.execute(any())).thenReturn(mockHttpResponse);
       when(mockHttpResponse.getStatusLine()).thenReturn(mockStatusLine);
       when(mockStatusLine.getStatusCode()).thenReturn(200);
@@ -177,7 +194,8 @@ public class TelemetryClientTest {
       IDatabricksConnectionContext context =
           DatabricksConnectionContext.parse(jdbcUrlWith2SecondsFlush, new Properties());
       TelemetryClient client =
-          new TelemetryClient(context, MoreExecutors.newDirectExecutorService(), databricksConfig);
+          new TelemetryClient(
+              context, MoreExecutors.newDirectExecutorService(), scheduler, databricksConfig);
 
       // Add a single event that won't trigger batch flush
       client.exportEvent(
@@ -198,6 +216,11 @@ public class TelemetryClientTest {
       // Close the client to trigger final flush
       client.close();
       assertEquals(0, client.getCurrentSize());
+    } finally {
+      scheduler.shutdown();
+      if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+        scheduler.shutdownNow();
+      }
     }
   }
 
@@ -205,11 +228,12 @@ public class TelemetryClientTest {
   public void testTimerResetOnBatchSizeFlush() throws Exception {
     TelemetryClient client = null;
     ExecutorService executor = null;
+    ScheduledExecutorService scheduler = createRealScheduler();
     try (MockedStatic<DatabricksHttpClientFactory> factoryMocked =
         mockStatic(DatabricksHttpClientFactory.class)) {
       DatabricksHttpClientFactory mockFactory = mock(DatabricksHttpClientFactory.class);
       factoryMocked.when(DatabricksHttpClientFactory::getInstance).thenReturn(mockFactory);
-      when(mockFactory.getClient(any())).thenReturn(mockHttpClient);
+      when(mockFactory.getClient(any(), any())).thenReturn(mockHttpClient);
       when(mockHttpClient.execute(any())).thenReturn(mockHttpResponse);
       when(mockHttpResponse.getStatusLine()).thenReturn(mockStatusLine);
       when(mockStatusLine.getStatusCode()).thenReturn(200);
@@ -223,7 +247,7 @@ public class TelemetryClientTest {
       IDatabricksConnectionContext context =
           DatabricksConnectionContext.parse(jdbcUrl, new Properties());
       executor = MoreExecutors.newDirectExecutorService();
-      client = new TelemetryClient(context, executor);
+      client = new TelemetryClient(context, executor, scheduler);
 
       // Add events to trigger batch size flush
       client.exportEvent(
@@ -264,6 +288,10 @@ public class TelemetryClientTest {
         if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
           executor.shutdownNow();
         }
+      }
+      scheduler.shutdown();
+      if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+        scheduler.shutdownNow();
       }
       // Verify mocks were properly used
       verify(mockHttpClient, atLeastOnce()).execute(any());
